@@ -113,7 +113,7 @@ def download_nsrr_dataset(dataset_name, logger):
     logger.info("Running: %s", " ".join(cmd))
 
     process = subprocess.Popen(
-        cmd, cwd=str(data_dir),
+        cmd, cwd=str(data_dir.parent),
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
     for line in process.stdout:

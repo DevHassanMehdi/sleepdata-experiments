@@ -1,0 +1,93 @@
+======================================================================
+FILE: Activity.csv
+======================================================================
+
+SHAPE: 1030559 rows x 3 columns
+
+COLUMNS (3):
+    1. patient_id
+    2. location_name
+    3. date
+
+FIRST 3 ROWS:
+  patient_id location_name                 date
+0      0697d   Fridge Door  2019-06-28 13:03:29
+1      0697d       Kitchen  2019-06-28 13:11:44
+2      0697d    Front Door  2019-06-28 13:13:50
+
+======================================================================
+FILE: Demographics.csv
+======================================================================
+
+SHAPE: 56 rows x 3 columns
+
+COLUMNS (3):
+    1. patient_id
+    2. age
+    3. sex
+
+FIRST 3 ROWS:
+  patient_id       age     sex
+0      b9d58  (70, 80]  Female
+1      c55f8  (80, 90]  Female
+2      16f4b  (80, 90]    Male
+
+======================================================================
+FILE: Labels.csv
+======================================================================
+
+SHAPE: 608 rows x 3 columns
+
+COLUMNS (3):
+    1. patient_id
+    2. date
+    3. type
+
+FIRST 3 ROWS:
+  patient_id                 date            type
+0      c55f8  2019-04-04 09:10:21  Blood pressure
+1      16f4b  2019-04-08 13:40:20  Blood pressure
+2      16f4b  2019-04-11 12:00:22       Agitation
+
+======================================================================
+FILE: Physiology.csv
+======================================================================
+
+SHAPE: 17679 rows x 5 columns
+
+COLUMNS (5):
+    1. patient_id
+    2. date
+    3. device_type
+    4. value
+    5. unit
+
+FIRST 3 ROWS:
+  patient_id                 date       device_type   value unit
+0      0697d  2019-06-28 13:42:09  Body Temperature  36.072  Cel
+1      0697d  2019-06-28 13:42:44  Body Temperature  35.831  Cel
+2      0697d  2019-06-28 13:43:40  Body Temperature  35.831  Cel
+
+======================================================================
+FILE: Sleep.csv
+======================================================================
+
+SHAPE: 461423 rows x 6 columns
+
+COLUMNS (6):
+    1. patient_id
+    2. date
+    3. state
+    4. heart_rate
+    5. respiratory_rate
+    6. snoring
+
+FIRST 3 ROWS:
+  patient_id                 date  state  heart_rate  respiratory_rate  snoring
+0      0f352  2019-06-25 22:53:00  AWAKE        69.0              14.0    False
+1      0f352  2019-06-25 22:54:00  AWAKE        66.0              14.0    False
+2      0f352  2019-06-25 22:55:00  AWAKE        70.0              14.0    False
+
+======================================================================
+TOTAL FILES INSPECTED: 5
+======================================================================

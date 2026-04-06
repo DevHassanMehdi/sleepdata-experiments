@@ -17,7 +17,8 @@
 #   logs/07_harmonization_all.txt
 #
 # Usage (when implemented):
-#   python scripts/07_harmonization.py
+#   python3 scripts/07_harmonization.py
+#   (Runs across all datasets — no per-dataset flag needed)
 # =============================================================================
 
 import sys

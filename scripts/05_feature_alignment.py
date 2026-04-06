@@ -23,7 +23,8 @@
 #   logs/05_feature_alignment_all.txt
 #
 # Usage:
-#   python scripts/05_feature_alignment.py
+#   python3 scripts/05_feature_alignment.py
+#   (Runs across all datasets — no per-dataset flag needed)
 # =============================================================================
 
 import sys

@@ -21,7 +21,8 @@
 #   logs/08_comparison_all.txt
 #
 # Usage (when implemented):
-#   python scripts/08_comparison.py
+#   python3 scripts/08_comparison.py
+#   (Runs across all datasets — no per-dataset flag needed)
 # =============================================================================
 
 import sys

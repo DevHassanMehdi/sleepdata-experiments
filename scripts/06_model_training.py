@@ -18,10 +18,11 @@
 #   logs/06_model_training_<DATASET_NAME>.txt
 #
 # Usage (when implemented):
-#   python scripts/06_model_training.py
-#   Change DATASET_NAME below to switch datasets.
+#   python3 scripts/06_model_training.py                  # all datasets
+#   python3 scripts/06_model_training.py --dataset tihm   # one dataset
 # =============================================================================
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -31,10 +32,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
-# ---------------------------------------------------------------------------
-# Configuration — change this to switch datasets
-# ---------------------------------------------------------------------------
-DATASET_NAME = "tihm"
+import config
 
 # =============================================================================
 # TODO: Step 1 — Data loading and label extraction
@@ -89,12 +87,23 @@ DATASET_NAME = "tihm"
 # =============================================================================
 
 
-def main():
+def main(dataset_name):
     raise NotImplementedError(
-        "Stage 06 is not yet implemented. "
+        f"Stage 06 is not yet implemented for dataset '{dataset_name}'. "
         "See TODO sections in this file for the planned steps."
     )
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Stage 06: Model Training")
+    parser.add_argument(
+        "--dataset", metavar="NAME",
+        help="Dataset to process (default: all). One of: " + ", ".join(config.DATASET_PATHS),
+    )
+    args = parser.parse_args()
+
+    datasets = [args.dataset] if args.dataset else list(config.DATASET_PATHS.keys())
+
+    for ds in datasets:
+        print(f"\n{'='*50}\n  {ds.upper()}\n{'='*50}")
+        main(ds)

@@ -1,0 +1,39 @@
+# =============================================================================
+# Conda environment for sleepdata-experiments
+#
+# Create:   conda env create -f environment.yml
+# Activate: conda activate sleepdata
+# Update:   conda env update -f environment.yml --prune
+#
+# After activating, install the NSRR download tool:
+#   gem install nsrr
+# =============================================================================
+
+name: sleepdata
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.11
+  - ruby          # required for: gem install nsrr
+
+  # Data & ML
+  - pandas
+  - numpy
+  - scipy
+  - scikit-learn
+
+  # Visualisation
+  - matplotlib
+  - seaborn
+
+  # Utilities
+  - tqdm
+  - requests
+
+  # pip-only packages
+  - pip
+  - pip:
+    - umap-learn
