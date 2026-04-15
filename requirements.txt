@@ -7,3 +7,6 @@ tqdm
 requests
 umap-learn
 scipy
+mne
+tsfel
+python-dotenv
