@@ -5,14 +5,13 @@ Step 1: Parse NSRR annotation XML → extract and map sleep stage labels
 Step 2: Combine 30-second PSG epochs into 1-minute epochs (to match TIHM),
         then trim leading/trailing AWAKE epochs to the actual sleep period.
 Step 3: Open the EDF with MNE, list channels, and confirm signal slicing
-        for the target channel sets.
-Step 4: Extract TSFEL features per epoch for two channel sets:
-          • Full PSG  → outputs/mesa_features_full_{sid}.csv
-          • Wearable  → outputs/mesa_features_wearable_{sid}.csv
+        for the full PSG channel set.
+Step 4: Extract TSFEL features per epoch for the full PSG channel set:
+          • Full PSG  → outputs/features/full/mesa_features_full_{sid}.csv
 
 Usage:
-  python scripts/extract_mesa_features.py                    # subject 0001
-  python scripts/extract_mesa_features.py --subject 0004
+  python scripts/02_extract_mesa_features.py                    # subject 0001
+  python scripts/02_extract_mesa_features.py --subject 0004
 """
 
 import argparse
@@ -65,9 +64,8 @@ _DS_RATIOS = {64: (1, 4), 32: (1, 8)}
 # ---------------------------------------------------------------------------
 # Channel sets
 # ---------------------------------------------------------------------------
-FULL_PSG_CHANNELS      = ["EKG", "EOG-L", "EOG-R", "EMG", "EEG1", "EEG2", "EEG3",
-                           "Thor", "Abdo", "Flow", "Snore", "SpO2", "HR", "Pleth"]
-WEARABLE_CHANNELS      = ["HR", "EKG", "Pleth", "Thor", "Abdo", "Flow", "Snore"]
+FULL_PSG_CHANNELS = ["EKG", "EOG-L", "EOG-R", "EMG", "EEG1", "EEG2", "EEG3",
+                     "Thor", "Abdo", "Flow", "Snore", "SpO2", "HR", "Pleth"]
 
 # ---------------------------------------------------------------------------
 # Stage label → 4-class mapping
@@ -466,21 +464,16 @@ def inspect_edf(edf_path: Path, epochs_1min: list, out: StringIO):
         p(f"    {fs:>8.1f} Hz  →  {len(chs):>2} channel(s): {', '.join(chs[:6])}{suffix}")
 
     # -------------------------------------------------------------------------
-    # Confirm channel matching for both sets
+    # Confirm channel matching for full PSG set
     # -------------------------------------------------------------------------
-    all_targets = list(dict.fromkeys(FULL_PSG_CHANNELS + WEARABLE_CHANNELS))
-    matched = _match_channels(all_targets, channels)
+    matched = _match_channels(FULL_PSG_CHANNELS, channels)
 
-    p(f"\n  Channel matching (full PSG + wearable sets):")
-    p(f"    {'Target':<12}  {'EDF channel':<30}  {'Sets'}")
-    p("    " + "-" * 64)
-    for target in all_targets:
-        in_full     = target in FULL_PSG_CHANNELS
-        in_wearable = target in WEARABLE_CHANNELS
-        sets = ("PSG+W" if (in_full and in_wearable)
-                else ("PSG" if in_full else "W"))
+    p(f"\n  Channel matching (full PSG set):")
+    p(f"    {'Target':<12}  {'EDF channel':<30}")
+    p("    " + "-" * 44)
+    for target in FULL_PSG_CHANNELS:
         status = matched.get(target, "[NOT FOUND]")
-        p(f"    {target:<12}  {status:<30}  {sets}")
+        p(f"    {target:<12}  {status:<30}")
 
     # -------------------------------------------------------------------------
     # Confirm slicing on first 1-minute epoch
@@ -499,7 +492,7 @@ def inspect_edf(edf_path: Path, epochs_1min: list, out: StringIO):
     p(f"    {'Target':<12}  {'EDF channel':<30}  {'Shape'}")
     p("    " + "-" * 60)
 
-    for target in all_targets:
+    for target in FULL_PSG_CHANNELS:
         if target not in matched:
             p(f"    {target:<12}  {'—':<30}  [NOT FOUND]")
             continue
@@ -533,8 +526,7 @@ def _run_tsfel(tsfel, cfg, signal: np.ndarray, fs: int, target: str) -> dict:
     return feats.iloc[0].to_dict()
 
 
-FEAT_FULL_DIR     = OUTPUT_DIR / "features" / "full"
-FEAT_WEARABLE_DIR = OUTPUT_DIR / "features" / "wearable"
+FEAT_FULL_DIR = OUTPUT_DIR / "features" / "full"
 
 
 def extract_features(raw, epochs_1min: list, sid: str,
@@ -553,7 +545,7 @@ def extract_features(raw, epochs_1min: list, sid: str,
 
     Returns
     -------
-    dict with keys: elapsed, n_epochs, label_dist, full_path, wearable_path
+    dict with keys: elapsed, n_epochs, label_dist, full_path
     or None on fatal error.
     """
     def p(line=""):
@@ -574,27 +566,22 @@ def extract_features(raw, epochs_1min: list, sid: str,
     channels = raw.info["ch_names"]
     orig_fs  = int(raw.info["sfreq"])   # 256 Hz for all MESA channels
 
-    full_matched     = _match_channels(FULL_PSG_CHANNELS, channels)
-    wearable_matched = _match_channels(WEARABLE_CHANNELS, channels)
-    found_full     = [t for t in FULL_PSG_CHANNELS if t in full_matched]
-    found_wearable = [t for t in WEARABLE_CHANNELS if t in wearable_matched]
+    full_matched = _match_channels(FULL_PSG_CHANNELS, channels)
+    found_full   = [t for t in FULL_PSG_CHANNELS if t in full_matched]
 
-    if not found_full and not found_wearable:
+    if not found_full:
         p("  [ERROR] No target channels found — aborting.")
         return None
 
     # ---- Channel sampling-rate table (verbose only) ----
-    all_targets = list(dict.fromkeys(found_full + found_wearable))
     p(f"\n  {'Channel':<10}  {'EDF name':<30}  {'Orig Hz':>7}  {'Target Hz':>9}"
       f"  {'Orig samp':>9}  {'Resamp samp':>11}")
     p("  " + "─" * 76)
-    for target in all_targets:
-        edf_ch   = (full_matched if target in full_matched else wearable_matched)[target]
-        tgt_fs   = CHANNEL_TARGET_FS.get(target, 32)
-        in_sets  = (["PSG"] if target in full_matched else []) + \
-                   (["W"]   if target in wearable_matched else [])
+    for target in found_full:
+        edf_ch = full_matched[target]
+        tgt_fs = CHANNEL_TARGET_FS.get(target, 32)
         p(f"  {target:<10}  {edf_ch:<30}  {orig_fs:>7}  {tgt_fs:>9}"
-          f"  {orig_fs * 60:>9}  {tgt_fs * 60:>11}  ({'+'.join(in_sets)})")
+          f"  {orig_fs * 60:>9}  {tgt_fs * 60:>11}")
 
     # ---- Feature count on dummy signals (verbose only) ----
     cfg = tsfel.get_features_by_domain()
@@ -613,18 +600,12 @@ def extract_features(raw, epochs_1min: list, sid: str,
             tf  = c64 * n64 + c32 * n32
             p(f"  Expected full PSG columns    : {c64}×{n64} + {c32}×{n32}"
               f" = {tf} features + 1 label = {tf + 1} columns")
-            w64 = sum(1 for t in found_wearable if CHANNEL_TARGET_FS.get(t, 32) == 64)
-            w32 = sum(1 for t in found_wearable if CHANNEL_TARGET_FS.get(t, 32) == 32)
-            tw  = w64 * n64 + w32 * n32
-            p(f"  Expected wearable columns    : {w64}×{n64} + {w32}×{n32}"
-              f" = {tw} features + 1 label = {tw + 1} columns")
         except Exception as e:
             p(f"  [WARN] Could not count features on dummy signal: {e}")
 
-    t0            = time.time()
-    rows_full     = []
-    rows_wearable = []
-    n_epochs      = len(epochs_1min)
+    t0       = time.time()
+    rows_full = []
+    n_epochs  = len(epochs_1min)
     p(f"\n  Processing {n_epochs} epochs ...")
 
     for ep_idx, epoch in enumerate(epochs_1min):
@@ -633,36 +614,24 @@ def extract_features(raw, epochs_1min: list, sid: str,
         si, ei  = raw.time_as_index([t_start, t_stop])
         label   = epoch["label"]
 
-        if found_full:
-            row = {}
-            for target in found_full:
-                ch_idx  = channels.index(full_matched[target])
-                data, _ = raw[ch_idx, si:ei]
-                sig, fs = _resample_channel(data[0], target)
-                row.update(_run_tsfel(tsfel, cfg, sig, fs, target))
-            row["label"] = label
-            rows_full.append(row)
-
-        if found_wearable:
-            row = {}
-            for target in found_wearable:
-                ch_idx  = channels.index(wearable_matched[target])
-                data, _ = raw[ch_idx, si:ei]
-                sig, fs = _resample_channel(data[0], target)
-                row.update(_run_tsfel(tsfel, cfg, sig, fs, target))
-            row["label"] = label
-            rows_wearable.append(row)
+        row = {}
+        for target in found_full:
+            ch_idx  = channels.index(full_matched[target])
+            data, _ = raw[ch_idx, si:ei]
+            sig, fs = _resample_channel(data[0], target)
+            row.update(_run_tsfel(tsfel, cfg, sig, fs, target))
+        row["label"] = label
+        rows_full.append(row)
 
         if verbose and ((ep_idx + 1) % 50 == 0 or (ep_idx + 1) == n_epochs):
             p(f"    epoch {ep_idx + 1:>4}/{n_epochs}  ({time.time() - t0:.1f}s elapsed)")
 
     elapsed = time.time() - t0
 
-    # ---- Save CSVs ----
+    # ---- Save CSV ----
     FEAT_FULL_DIR.mkdir(parents=True, exist_ok=True)
-    FEAT_WEARABLE_DIR.mkdir(parents=True, exist_ok=True)
+    full_path = None
     results   = {}
-    full_path = wearable_path = None
 
     if rows_full:
         df = pd.DataFrame(rows_full)
@@ -670,13 +639,6 @@ def extract_features(raw, epochs_1min: list, sid: str,
         full_path = FEAT_FULL_DIR / f"mesa_features_full_{sid}.csv"
         df.to_csv(full_path, index=False)
         results["full"] = (df, full_path)
-
-    if rows_wearable:
-        df = pd.DataFrame(rows_wearable)
-        df = df[[c for c in df.columns if c != "label"] + ["label"]]
-        wearable_path = FEAT_WEARABLE_DIR / f"mesa_features_wearable_{sid}.csv"
-        df.to_csv(wearable_path, index=False)
-        results["wearable"] = (df, wearable_path)
 
     # ---- Verbose summary ----
     p(f"\n  {'─' * 60}")
@@ -703,11 +665,10 @@ def extract_features(raw, epochs_1min: list, sid: str,
     p(f"  {'─' * 60}")
 
     return {
-        "elapsed":       elapsed,
-        "n_epochs":      n_epochs,
-        "label_dist":    label_dist,
-        "full_path":     full_path,
-        "wearable_path": wearable_path,
+        "elapsed":    elapsed,
+        "n_epochs":   n_epochs,
+        "label_dist": label_dist,
+        "full_path":  full_path,
     }
 
 
@@ -726,27 +687,25 @@ def process_subject(sid: str, verbose: bool) -> dict:
     Returns a dict with keys:
       sid, status ('processed'|'skipped'|'missing'|'exists'),
       n_epochs, n_awake, n_light, n_deep, n_rem,
-      processing_time_seconds, label_dist, full_path, wearable_path
+      processing_time_seconds, label_dist, full_path
     """
-    xml_path     = ANNOT_DIR / f"mesa-sleep-{sid}-nsrr.xml"
-    edf_path     = EDF_DIR   / f"mesa-sleep-{sid}.edf"
-    full_out     = FEAT_FULL_DIR     / f"mesa_features_full_{sid}.csv"
-    wearable_out = FEAT_WEARABLE_DIR / f"mesa_features_wearable_{sid}.csv"
+    xml_path = ANNOT_DIR / f"mesa-sleep-{sid}-nsrr.xml"
+    edf_path = EDF_DIR   / f"mesa-sleep-{sid}.edf"
+    full_out = FEAT_FULL_DIR / f"mesa_features_full_{sid}.csv"
 
     def _empty(status: str) -> dict:
         return {"sid": sid, "status": status,
                 "n_epochs": 0, "n_awake": 0, "n_light": 0, "n_deep": 0, "n_rem": 0,
                 "processing_time_seconds": 0.0, "label_dist": Counter(),
-                "full_path": None, "wearable_path": None}
+                "full_path": None}
 
     # Missing input files
     if not xml_path.exists() or not edf_path.exists():
         return _empty("missing")
 
-    # Resume: both outputs exist and are large enough
-    full_ok     = full_out.exists()     and full_out.stat().st_size     >= RESUME_MIN_BYTES
-    wearable_ok = wearable_out.exists() and wearable_out.stat().st_size >= RESUME_MIN_BYTES
-    if full_ok and wearable_ok:
+    # Resume: full output exists and is large enough
+    full_ok = full_out.exists() and full_out.stat().st_size >= RESUME_MIN_BYTES
+    if full_ok:
         try:
             labels = pd.read_csv(full_out, usecols=["label"])["label"]
             dist   = Counter(labels)
@@ -761,7 +720,7 @@ def process_subject(sid: str, verbose: bool) -> dict:
                 "n_rem":    dist.get("REM",   0),
                 "processing_time_seconds": 0.0,
                 "label_dist": dist,
-                "full_path": full_out, "wearable_path": wearable_out}
+                "full_path": full_out}
 
     buf  = StringIO()
     null = StringIO()   # silent sink for batch mode
@@ -802,8 +761,7 @@ def process_subject(sid: str, verbose: bool) -> dict:
             "n_rem":    dist.get("REM",   0),
             "processing_time_seconds": feat_result["elapsed"],
             "label_dist": dist,
-            "full_path": feat_result["full_path"],
-            "wearable_path": feat_result["wearable_path"]}
+            "full_path": feat_result["full_path"]}
 
 
 # =============================================================================

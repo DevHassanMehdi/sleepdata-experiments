@@ -1,71 +1,82 @@
-# Evaluating Machine Learning Performance Across Clinical PSG and Wearable Sleep Data: Feature Reduction and Harmonization Analysis
+# Sleep Stage Classification Across Clinical PSG and Wearable IoT Data
 
-Master's thesis research repository.
-
-## Overview
-
-This project systematically compares machine learning model performance across four clinical polysomnography (PSG) datasets and one wearable IoT dataset, then evaluates whether data harmonization improves cross-device generalization.
+Master's thesis research repository comparing ML sleep staging performance between MESA (clinical PSG) and TIHM (wearable IoT).
 
 ## Datasets
 
-| Name  | Type          | Source                                      |
-|-------|---------------|---------------------------------------------|
-| SHHS  | Clinical PSG  | NSRR — Sleep Heart Health Study             |
-| MrOS  | Clinical PSG  | NSRR — Osteoporotic Fractures in Men Study  |
-| MESA  | Clinical PSG  | NSRR — Multi-Ethnic Study of Atherosclerosis|
-| SSC   | Clinical PSG  | Stanford Sleep Cohort                       |
-| TIHM  | Wearable IoT  | Zenodo — Technology Integrated Health Management for Dementia |
-
-## Setup
-
-```bash
-pip install -r requirements.txt
-```
-
-## Downloading Data
-
-```bash
-# TIHM (Zenodo — no account required)
-python downloaders/download_tihm.py
-
-# NSRR datasets (requires NSRR account + token)
-python downloaders/download_nsrr.py
-```
-
-See [downloaders/README.md](downloaders/README.md) for details.
-
-## Pipeline Stages
-
-Run scripts in order. Each script reads from `data/<dataset>/` and writes to `outputs/<dataset>/`.
-
-| Stage | Script                          | Description                                      |
-|-------|---------------------------------|--------------------------------------------------|
-| 01    | `scripts/01_dataset_profiling.py`   | Load CSVs, log shapes, dtypes, missing values    |
-| 02    | `scripts/02_feature_inventory.py`   | Categorize all features by keyword matching      |
-| 03    | `scripts/03_data_quality.py`        | Missing %, outlier counts, quality report        |
-| 04    | `scripts/04_eda.py`                 | Histograms, correlation, PCA / t-SNE / UMAP      |
-| 05    | `scripts/05_feature_alignment.py`   | Cross-dataset feature alignment matrix           |
-| 06    | `scripts/06_model_training.py`      | ML model training per dataset *(TBD)*            |
-| 07    | `scripts/07_harmonization.py`       | Data harmonization across datasets *(TBD)*       |
-| 08    | `scripts/08_comparison.py`          | Cross-dataset performance comparison *(TBD)*     |
-
-Change `DATASET_NAME` at the top of any script to switch between datasets.
+| Name | Type         | Source                                                    |
+|------|--------------|-----------------------------------------------------------|
+| MESA | Clinical PSG | NSRR — Multi-Ethnic Study of Atherosclerosis              |
+| TIHM | Wearable IoT | Zenodo — Technology Integrated Health Management for Dementia |
 
 ## Project Structure
 
 ```
 sleepdata-experiments/
-├── config.py              # Central configuration
-├── requirements.txt
-├── data/                  # Raw dataset files (not committed)
-│   ├── tihm/
-│   ├── shhs/
-│   ├── mros/
+├── environment.yml          # Full conda environment spec
+├── environment_minimal.yml  # Minimal top-level deps only
+├── requirements.txt         # pip dependencies
+├── data/
 │   ├── mesa/
-│   └── ssc/
-├── outputs/               # Generated figures and tables (not committed)
-├── logs/                  # Runtime logs (not committed)
-├── utils/                 # Shared utilities
-├── scripts/               # Pipeline stage scripts
-└── downloaders/           # Dataset download helpers
+│   │   ├── edf/             # MESA EDF recordings (not committed)
+│   │   ├── annotations/     # NSRR XML annotation files (not committed)
+│   │   └── datasets/        # MESA harmonized CSV (not committed)
+│   └── tihm/                # TIHM CSV files (not committed)
+├── outputs/
+│   ├── features/
+│   │   └── full/            # mesa_features_full_XXXX.csv (one per subject)
+│   └── overview/            # SVG plots + summary text
+├── scripts/                 # Pipeline scripts (run in order)
+├── utils/
+│   ├── logger.py
+│   └── plotting.py
+└── logs/
 ```
+
+## Setup
+
+```bash
+# Create and activate conda environment
+conda env create -f environment.yml
+conda activate sleepdata
+
+# Install NSRR download tool (requires Ruby, included in conda env)
+gem install nsrr
+```
+
+### NSRR token
+
+Create `~/.nsrr_token` (or a `.env` file with `NSRR_TOKEN=<your-token>`) before running `01_download_dataset.py`.
+
+## Pipeline
+
+| Script                              | Description                                    | Status      |
+|-------------------------------------|------------------------------------------------|-------------|
+| `01_download_dataset.py`            | Download MESA EDFs + TIHM CSV files            | Complete    |
+| `02_extract_mesa_features.py`       | Extract TSFEL features from MESA EDF (full PSG)| Complete    |
+| `03_extract_mesa_aligned_features.py` | Extract 26 aligned features from MESA EDF   | Placeholder |
+| `04_extract_tihm_features.py`       | Extract features from TIHM CSV files           | Placeholder |
+| `05_dataset_overview.py`            | Dataset profiling, statistics, visualisations  | Complete    |
+| `06_model_training.py`              | Train ML classifiers                           | Planned     |
+| `07_harmonization.py`               | Harmonize features across datasets             | Planned     |
+| `08_comparison.py`                  | Cross-dataset performance comparison           | Planned     |
+
+### Run feature extraction (batch)
+
+```bash
+conda activate sleepdata
+python scripts/02_extract_mesa_features.py --subjects 350
+```
+
+### Run dataset overview
+
+```bash
+python scripts/05_dataset_overview.py
+# Outputs: outputs/overview/  (8 SVGs + dataset_overview_summary.txt)
+```
+
+## Current Status
+
+- MESA feature extraction complete (~350 subjects, full 14-channel PSG, 2,185 features/epoch).
+- Dataset overview script covers MESA harmonized stats, extracted feature stats, TIHM stats, and 8 visualisation plots.
+- Next: define and extract 26 aligned features for cross-dataset comparison (`03`, `04`).
