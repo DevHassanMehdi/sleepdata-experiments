@@ -26,7 +26,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from scipy.signal import resample_poly
-from tqdm import tqdm
 
 ROOT_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT_DIR))
@@ -711,6 +710,17 @@ def _fmt_time(secs: float) -> str:
     return f"{secs:.0f}s"
 
 
+def _fmt_dist(label_dist, n_epochs: int) -> str:
+    if n_epochs == 0:
+        return "no epochs"
+    parts = []
+    for lbl in ["AWAKE", "LIGHT", "DEEP", "REM"]:
+        c   = label_dist.get(lbl, 0)
+        pct = round(c / n_epochs * 100)
+        parts.append(f"{lbl} {pct}%")
+    return " / ".join(parts)
+
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -734,11 +744,11 @@ def main():
         status = result["status"]
         dist   = result["label_dist"]
 
-        print(f"Subject {sid}")
+        print(f"Subject {sid}", flush=True)
         if status == "missing":
-            print(f"  Error  : EDF or XML not found")
+            print(f"  Error  : EDF or XML not found", flush=True)
         elif status == "skipped":
-            print(f"  Error  : no clean epochs (see {OUTPUT_FILE})")
+            print(f"  Error  : no clean epochs (see {OUTPUT_FILE})", flush=True)
         else:
             n = result["n_epochs"]
             tag = "  (already done)" if status == "exists" else ""
@@ -746,11 +756,11 @@ def main():
                   f"  (AWAKE {dist.get('AWAKE', 0)}"
                   f" / LIGHT {dist.get('LIGHT', 0)}"
                   f" / DEEP {dist.get('DEEP', 0)}"
-                  f" / REM {dist.get('REM', 0)})")
+                  f" / REM {dist.get('REM', 0)})", flush=True)
             if status == "processed":
-                print(f"  Dropped: {result['n_mixed']} mixed-label pairs")
-                print(f"  Time   : {result['processing_time_seconds'] / 60:.1f} min")
-            print(f"  Saved  : {result['full_path'].relative_to(ROOT_DIR)}")
+                print(f"  Dropped: {result['n_mixed']} mixed-label pairs", flush=True)
+                print(f"  Time   : {result['processing_time_seconds'] / 60:.1f} min", flush=True)
+            print(f"  Saved  : {result['full_path'].relative_to(ROOT_DIR)}", flush=True)
         return
 
     # ------------------------------------------------------------------ batch
@@ -765,9 +775,6 @@ def main():
     total_proc_s  = 0.0
 
     consecutive_missing = 0
-
-    pbar = tqdm(total=n_target, desc="Extracting MESA features",
-                unit="subject", dynamic_ncols=True)
 
     for i in range(1, 10000):
         done = n_processed + n_resumed
@@ -785,6 +792,7 @@ def main():
             continue
         consecutive_missing = 0
 
+        print(f"Processing {sid} ...", flush=True)
         result = process_subject(sid, save_log=False)
         status = result["status"]
 
@@ -801,8 +809,7 @@ def main():
 
         if status in ("missing", "skipped"):
             n_skipped += 1
-            done = n_processed + n_resumed
-            tqdm.write(f"[{done + 1}/{n_target}] {sid} — skipped (no EDF)")
+            print(f"Skipping {sid} — no EDF found", flush=True)
             continue
 
         n_ep = result["n_epochs"]
@@ -811,21 +818,19 @@ def main():
 
         if status == "exists":
             n_resumed += 1
+            print(f"Skipping {sid} — already done", flush=True)
         else:
             n_processed  += 1
             total_proc_s += result["processing_time_seconds"]
+            dist_str      = _fmt_dist(result["label_dist"], n_ep)
+            t_min         = result["processing_time_seconds"] / 60
+            print(f"Done — {n_ep} epochs ({dist_str}) — {t_min:.1f} min", flush=True)
 
         done = n_processed + n_resumed
-        pbar.update(1)
-
-        if status == "processed":
-            t_min = result["processing_time_seconds"] / 60
-            tqdm.write(f"[{done}/{n_target}] {sid}"
-                       f" — {n_ep} epochs"
-                       f" — {t_min:.1f} min"
-                       f" — saved")
-
-    pbar.close()
+        if done > 0 and done % 25 == 0:
+            elapsed = time.time() - t_batch_start
+            print(f"── Progress: {done}/{n_target} subjects done"
+                  f" — {elapsed / 3600:.1f} hr elapsed ──", flush=True)
 
     # ---- Save metadata CSV ----
     BATCH_SUMMARY_CSV.parent.mkdir(parents=True, exist_ok=True)
@@ -837,22 +842,22 @@ def main():
     avg_s         = (total_proc_s / n_processed) if n_processed > 0 else 0.0
 
     SEP = "\u2550" * 34
-    print(f"\n{SEP}")
-    print(f" MESA Feature Extraction Complete")
-    print(SEP)
-    print(f" Processed    : {n_processed} subjects")
-    print(f" Already done : {n_resumed}")
-    print(f" Skipped      : {n_skipped}  (no EDF found)")
-    print(f" Total epochs : {total_epochs:,}")
-    print(f" Total time   : {_fmt_time(elapsed_total)}")
-    print(f" Avg/subject  : {_fmt_time(avg_s)}")
+    print(f"\n{SEP}", flush=True)
+    print(f" MESA Feature Extraction Complete", flush=True)
+    print(SEP, flush=True)
+    print(f" Processed    : {n_processed} subjects", flush=True)
+    print(f" Already done : {n_resumed}", flush=True)
+    print(f" Skipped      : {n_skipped}  (no EDF found)", flush=True)
+    print(f" Total epochs : {total_epochs:,}", flush=True)
+    print(f" Total time   : {_fmt_time(elapsed_total)}", flush=True)
+    print(f" Avg/subject  : {_fmt_time(avg_s)}", flush=True)
     if grand > 0:
-        print(f"\n Label distribution (all subjects):")
+        print(f"\n Label distribution (all subjects):", flush=True)
         for lbl in ["AWAKE", "LIGHT", "DEEP", "REM"]:
             c = total_dist.get(lbl, 0)
             if c:
-                print(f"   {lbl:<8}  {c:>8,}  ({c / grand * 100:5.1f}%)")
-    print(SEP)
+                print(f"   {lbl:<8}  {c:>8,}  ({c / grand * 100:5.1f}%)", flush=True)
+    print(SEP, flush=True)
 
 
 if __name__ == "__main__":

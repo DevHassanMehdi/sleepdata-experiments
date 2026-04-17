@@ -292,20 +292,27 @@ def process_subject(sid: str, meta: pd.DataFrame) -> dict:
     """
     Full pipeline for one subject: annotations → EDF → features → CSV.
 
-    Returns a result dict with keys: sid, status, n_epochs, elapsed_s.
+    Returns a result dict with keys: sid, status, n_epochs, elapsed_s, label_dist.
     """
     xml_path = ANNOT_DIR / f"mesa-sleep-{sid}-nsrr.xml"
     edf_path = EDF_DIR   / f"mesa-sleep-{sid}.edf"
     out_path = FEAT_ALIGNED_DIR / f"mesa_aligned_{sid}.csv"
 
-    def _result(status, n_epochs=0, elapsed=0.0):
-        return {"sid": sid, "status": status, "n_epochs": n_epochs, "elapsed_s": elapsed}
+    def _result(status, n_epochs=0, elapsed=0.0, label_dist=None):
+        return {"sid": sid, "status": status, "n_epochs": n_epochs,
+                "elapsed_s": elapsed, "label_dist": label_dist or {}}
 
     if not xml_path.exists() or not edf_path.exists():
         return _result("missing")
 
     if out_path.exists() and out_path.stat().st_size >= RESUME_MIN_BYTES:
-        return _result("exists")
+        try:
+            labels     = pd.read_csv(out_path, usecols=["label"])["label"]
+            label_dist = labels.value_counts().to_dict()
+            n          = len(labels)
+        except Exception:
+            label_dist, n = {}, 0
+        return _result("exists", n_epochs=n, label_dist=label_dist)
 
     mne.set_log_level("WARNING")
     raw = mne.io.read_raw_edf(str(edf_path), preload=True, verbose=False)
@@ -317,10 +324,11 @@ def process_subject(sid: str, meta: pd.DataFrame) -> dict:
     if df is None or df.empty:
         return _result("skipped")
 
+    label_dist = df["label"].value_counts().to_dict()
     FEAT_ALIGNED_DIR.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_path, index=False)
 
-    return _result("processed", n_epochs=len(df), elapsed=elapsed)
+    return _result("processed", n_epochs=len(df), elapsed=elapsed, label_dist=label_dist)
 
 
 # =============================================================================
@@ -329,6 +337,17 @@ def process_subject(sid: str, meta: pd.DataFrame) -> dict:
 
 def _fmt_min(s: float) -> str:
     return f"{s / 60:.1f} min"
+
+
+def _fmt_dist(label_dist: dict, n_epochs: int) -> str:
+    if n_epochs == 0:
+        return "no epochs"
+    parts = []
+    for lbl in ["AWAKE", "LIGHT", "DEEP", "REM"]:
+        c   = label_dist.get(lbl, 0)
+        pct = round(c / n_epochs * 100)
+        parts.append(f"{lbl} {pct}%")
+    return " / ".join(parts)
 
 
 # =============================================================================
@@ -352,21 +371,22 @@ def main():
     # ------------------------------------------------------------------ single
     if args.subjects is None:
         sid = (args.subject or "0001").zfill(4)
-        print(f"Processing {sid} ...", end=" ", flush=True)
+        print(f"Processing {sid} ...", flush=True)
         res = process_subject(sid, meta)
 
         if res["status"] == "missing":
-            print(f"skipped (no EDF or XML)")
+            print(f"Skipping {sid} — no EDF or XML", flush=True)
         elif res["status"] == "skipped":
-            print(f"skipped (no clean epochs)")
+            print(f"Skipping {sid} — no clean epochs", flush=True)
         elif res["status"] == "exists":
-            print(f"already done, skipping")
+            print(f"Skipping {sid} — already done", flush=True)
         else:
-            n = res["n_epochs"]
-            t = _fmt_min(res["elapsed_s"])
-            print(f"done  ({n} clean epochs, {t})")
+            n        = res["n_epochs"]
+            t        = _fmt_min(res["elapsed_s"])
+            dist_str = _fmt_dist(res["label_dist"], n)
+            print(f"Done — {n} epochs ({dist_str}) — {t}", flush=True)
             out = FEAT_ALIGNED_DIR / f"mesa_aligned_{sid}.csv"
-            print(f"Saved: {out.relative_to(ROOT_DIR)}")
+            print(f"Saved: {out.relative_to(ROOT_DIR)}", flush=True)
         return
 
     # ------------------------------------------------------------------ batch
@@ -379,8 +399,7 @@ def main():
     consecutive_missing = 0
 
     for i in range(1, 10_000):
-        done = n_processed
-        if done >= n_target:
+        if n_processed >= n_target:
             break
 
         sid      = f"{i:04d}"
@@ -394,77 +413,58 @@ def main():
             continue
         consecutive_missing = 0
 
+        print(f"Processing {sid} ...", flush=True)
         res    = process_subject(sid, meta)
         status = res["status"]
-        done   = n_processed + 1
 
         if status == "missing":
             n_skipped += 1
-            print(f"[{done:>3}/{n_target}] {sid} — skipped (no EDF)")
+            print(f"Skipping {sid} — no EDF found", flush=True)
             continue
 
         if status == "skipped":
             n_skipped += 1
-            print(f"[{done:>3}/{n_target}] {sid} — skipped (no clean epochs)")
+            print(f"Skipping {sid} — no clean epochs", flush=True)
             continue
+
+        n_ep = res["n_epochs"]
+        total_epochs += n_ep
+        for lbl, cnt in res["label_dist"].items():
+            total_dist[lbl] = total_dist.get(lbl, 0) + int(cnt)
+        n_processed += 1
 
         if status == "exists":
-            n_processed += 1
-            # Read label counts from existing file
-            out_path = FEAT_ALIGNED_DIR / f"mesa_aligned_{sid}.csv"
-            try:
-                labels = pd.read_csv(out_path, usecols=["label"])["label"]
-                n      = len(labels)
-                for lbl, cnt in labels.value_counts().items():
-                    total_dist[lbl] = total_dist.get(lbl, 0) + int(cnt)
-            except Exception:
-                n = 0
-            total_epochs += n
-            print(f"[{n_processed:>3}/{n_target}] {sid} — already done, skipping")
-            continue
+            print(f"Skipping {sid} — already done", flush=True)
+        else:
+            dist_str = _fmt_dist(res["label_dist"], n_ep)
+            t_min    = _fmt_min(res["elapsed_s"])
+            print(f"Done — {n_ep} epochs ({dist_str}) — {t_min}", flush=True)
 
-        # processed
-        n_processed  += 1
-        total_epochs += res["n_epochs"]
-        t_min         = _fmt_min(res["elapsed_s"])
-
-        out_path = FEAT_ALIGNED_DIR / f"mesa_aligned_{sid}.csv"
-        try:
-            labels = pd.read_csv(out_path, usecols=["label"])["label"]
-            for lbl, cnt in labels.value_counts().items():
-                total_dist[lbl] = total_dist.get(lbl, 0) + int(cnt)
-        except Exception:
-            pass
-
-        print(f"[{n_processed:>3}/{n_target}] {sid}"
-              f" — {res['n_epochs']} epochs — {t_min} — saved")
-
-        if n_processed % 50 == 0:
+        if n_processed > 0 and n_processed % 25 == 0:
             elapsed = time.time() - t_start
-            print(f"── {n_processed}/{n_target} done"
-                  f" — {total_epochs:,} epochs so far"
-                  f" — {_fmt_min(elapsed)} elapsed ──")
+            print(f"── Progress: {n_processed}/{n_target} subjects done"
+                  f" — {elapsed / 3600:.1f} hr elapsed ──", flush=True)
 
     elapsed_total = time.time() - t_start
     grand         = sum(total_dist.values())
 
     SEP = "\u2550" * 38
-    print(f"\n{SEP}")
-    print(f" MESA Aligned Feature Extraction Done")
-    print(SEP)
-    print(f" Processed   : {n_processed} subjects")
-    print(f" Skipped     : {n_skipped}  (no EDF)")
-    print(f" Total epochs: {total_epochs:,}")
-    print(f" Total time  : {_fmt_min(elapsed_total)}")
+    print(f"\n{SEP}", flush=True)
+    print(f" MESA Aligned Feature Extraction Done", flush=True)
+    print(SEP, flush=True)
+    print(f" Processed   : {n_processed} subjects", flush=True)
+    print(f" Skipped     : {n_skipped}  (no EDF)", flush=True)
+    print(f" Total epochs: {total_epochs:,}", flush=True)
+    print(f" Total time  : {_fmt_min(elapsed_total)}", flush=True)
     if n_processed > 0:
-        print(f" Avg/subject : {_fmt_min(elapsed_total / n_processed)}")
+        print(f" Avg/subject : {_fmt_min(elapsed_total / n_processed)}", flush=True)
     if grand > 0:
-        print(f"\n Label distribution:")
+        print(f"\n Label distribution:", flush=True)
         for lbl in ["AWAKE", "LIGHT", "DEEP", "REM"]:
             c = total_dist.get(lbl, 0)
             if c:
-                print(f"   {lbl:<8}  {c:>8,}  {c / grand * 100:5.1f}%")
-    print(SEP)
+                print(f"   {lbl:<8}  {c:>8,}  {c / grand * 100:5.1f}%", flush=True)
+    print(SEP, flush=True)
 
 
 if __name__ == "__main__":
