@@ -1,6 +1,6 @@
 """
-scripts/extract_mesa_features.py
-==================================
+scripts/02_extract_mesa_features.py
+=====================================
 Step 1: Parse NSRR annotation XML → extract and map sleep stage labels
 Step 2: Combine 30-second PSG epochs into 1-minute epochs (to match TIHM),
         then trim leading/trailing AWAKE epochs to the actual sleep period.
@@ -12,6 +12,7 @@ Step 4: Extract TSFEL features per epoch for the full PSG channel set:
 Usage:
   python scripts/02_extract_mesa_features.py                    # subject 0001
   python scripts/02_extract_mesa_features.py --subject 0004
+  python scripts/02_extract_mesa_features.py --subjects 350
 """
 
 import argparse
@@ -25,13 +26,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from scipy.signal import resample_poly
+from tqdm import tqdm
 
 ROOT_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
-ANNOT_DIR  = ROOT_DIR / "data/mesa/annotations"
-EDF_DIR    = ROOT_DIR / "data/mesa/edf"
-OUTPUT_DIR = ROOT_DIR / "outputs"
+ANNOT_DIR   = ROOT_DIR / "data/mesa/annotations"
+EDF_DIR     = ROOT_DIR / "data/mesa/edf"
+OUTPUT_DIR  = ROOT_DIR / "outputs"
 OUTPUT_FILE = OUTPUT_DIR / "mesa_edf_inspection.txt"
 
 # ---------------------------------------------------------------------------
@@ -58,7 +60,7 @@ CHANNEL_TARGET_FS = {
     "SpO2":  32,
 }
 
-# Downsample ratios from 256 Hz  (resample_poly up/down pairs)
+# Downsample ratios from 256 Hz (resample_poly up/down pairs)
 _DS_RATIOS = {64: (1, 4), 32: (1, 8)}
 
 # ---------------------------------------------------------------------------
@@ -103,7 +105,6 @@ STAGE_MAP = {
 
 def parse_annotations(xml_path: Path, out: StringIO):
     def p(line=""):
-        print(line)
         out.write(line + "\n")
 
     p("=" * 70)
@@ -112,13 +113,11 @@ def parse_annotations(xml_path: Path, out: StringIO):
 
     if not xml_path.exists():
         p(f"[ERROR] File not found: {xml_path}")
-        p("  Run: python utils/download_dataset.py --dataset mesa --subjects 1")
         return []
 
     tree = ET.parse(str(xml_path))
     root = tree.getroot()
 
-    # --- Print raw XML of first 5 ScoredEvent elements ---
     ns = ""
     if root.tag.startswith("{"):
         ns = root.tag.split("}")[0] + "}"
@@ -132,7 +131,6 @@ def parse_annotations(xml_path: Path, out: StringIO):
         p()
     p("-" * 70)
 
-    # --- Extract stage epochs ---
     epochs = []
     for event in all_events:
         etype_el   = event.find(f"{ns}EventType")
@@ -167,13 +165,11 @@ def parse_annotations(xml_path: Path, out: StringIO):
         p("  [WARN] No stage epochs found — check EventType values in the raw XML above.")
         return []
 
-    # --- Map to 4-class labels ---
     unmapped = set()
     for ep in epochs:
         raw = ep["raw"]
         mapped = STAGE_MAP.get(raw)
         if mapped is None:
-            # Try stripping common prefixes like "Sleep stage "
             for key, val in STAGE_MAP.items():
                 if raw.lower().endswith(key.lower()) or key.lower() in raw.lower():
                     mapped = val
@@ -186,7 +182,6 @@ def parse_annotations(xml_path: Path, out: StringIO):
     if unmapped:
         p(f"\n  [WARN] Unmapped stage labels (add to STAGE_MAP): {sorted(unmapped)}")
 
-    # --- Label distribution ---
     dist = Counter(ep["label"] for ep in epochs)
     total = sum(dist.values())
     p(f"\n  Mapped label distribution ({total} epochs × 30s):")
@@ -233,7 +228,6 @@ def build_continuous_30s_epochs(scored_events: list) -> list:
             slot_t = round(ev["start"] + j * 30.0, 3)
             label_at[slot_t] = ev["label"]
 
-    # Walk the full range in 30-second steps
     windows = []
     last_label = events[0]["label"]
     t = first_start
@@ -262,13 +256,11 @@ def build_continuous_30s_epochs(scored_events: list) -> list:
 def trim_to_sleep_period(epochs_1min: list, out: StringIO) -> list:
     """Remove leading and trailing AWAKE epochs outside the actual sleep period."""
     def p(line=""):
-        print(line)
         out.write(line + "\n")
 
     if not epochs_1min:
         return epochs_1min
 
-    # Find first and last non-AWAKE epoch
     first_sleep = next(
         (i for i, ep in enumerate(epochs_1min) if ep["label"] != "AWAKE"), None
     )
@@ -304,8 +296,11 @@ def trim_to_sleep_period(epochs_1min: list, out: StringIO) -> list:
 
 
 def combine_to_one_minute(scored_events: list, out: StringIO):
+    """
+    Returns (epochs_1min, n_mixed) where n_mixed is the count of
+    mixed-label pairs that were dropped.
+    """
     def p(line=""):
-        print(line)
         out.write(line + "\n")
 
     p("\n" + "=" * 70)
@@ -314,9 +309,8 @@ def combine_to_one_minute(scored_events: list, out: StringIO):
 
     if not scored_events:
         p("  No epochs to combine.")
-        return []
+        return [], 0
 
-    # Build gapless 30s sequence
     windows_30s = build_continuous_30s_epochs(scored_events)
     n_filled = sum(1 for w in windows_30s if w["filled"])
 
@@ -348,12 +342,10 @@ def combine_to_one_minute(scored_events: list, out: StringIO):
             })
         i += 2
 
-    # Unpaired last window (odd total) — drop it for consistency
     n_unpaired = len(windows_30s) % 2
-
-    n_kept = len(epochs_1min)
-    mixed_pct = n_mixed / n_pairs_total * 100 if n_pairs_total else 0.0
-    kept_pct  = n_kept  / n_pairs_total * 100 if n_pairs_total else 0.0
+    n_kept     = len(epochs_1min)
+    mixed_pct  = n_mixed / n_pairs_total * 100 if n_pairs_total else 0.0
+    kept_pct   = n_kept  / n_pairs_total * 100 if n_pairs_total else 0.0
 
     p(f"\n  30-second epochs input       : {len(windows_30s)}")
     p(f"  1-minute pairs formed        : {n_pairs_total}"
@@ -365,7 +357,7 @@ def combine_to_one_minute(scored_events: list, out: StringIO):
 
     if not epochs_1min:
         p("  [WARN] No clean epochs remain after dropping mixed pairs.")
-        return []
+        return [], n_mixed
 
     dist  = Counter(ep["label"] for ep in epochs_1min)
     total = sum(dist.values())
@@ -383,10 +375,9 @@ def combine_to_one_minute(scored_events: list, out: StringIO):
     for ep in epochs_1min[:10]:
         p(f"    {ep['start']:>10.0f}  {ep['label_a']:<10}  {ep['label_b']:<10}  {ep['label']}")
 
-    # Trim leading/trailing AWAKE epochs from the already-cleaned set
     epochs_1min = trim_to_sleep_period(epochs_1min, out)
 
-    return epochs_1min
+    return epochs_1min, n_mixed
 
 
 # =============================================================================
@@ -407,7 +398,6 @@ def _match_channels(target_names: list, edf_channels: list) -> dict:
 
 def inspect_edf(edf_path: Path, epochs_1min: list, out: StringIO):
     def p(line=""):
-        print(line)
         out.write(line + "\n")
 
     p("\n" + "=" * 70)
@@ -416,7 +406,6 @@ def inspect_edf(edf_path: Path, epochs_1min: list, out: StringIO):
 
     if not edf_path.exists():
         p(f"[ERROR] File not found: {edf_path}")
-        p("  Run: python utils/download_dataset.py --dataset mesa --subjects 1")
         return None
 
     try:
@@ -436,7 +425,6 @@ def inspect_edf(edf_path: Path, epochs_1min: list, out: StringIO):
     p(f"  Total duration     : {duration_min:.1f} min  ({duration_s:.0f} s)")
     p(f"  Number of channels : {len(channels)}")
 
-    # Try to get per-channel native sample rates from EDF record block
     channel_sfreqs = {}
     try:
         extras = raw._raw_extras[0]
@@ -453,7 +441,6 @@ def inspect_edf(edf_path: Path, epochs_1min: list, out: StringIO):
         fs = channel_sfreqs.get(ch, sfreq)
         p(f"    {idx:<4}  {ch:<30}  {fs:>8.1f}")
 
-    # Group by unique sampling frequencies
     by_freq: dict[float, list] = {}
     for ch, fs in channel_sfreqs.items():
         by_freq.setdefault(fs, []).append(ch)
@@ -463,9 +450,6 @@ def inspect_edf(edf_path: Path, epochs_1min: list, out: StringIO):
         suffix = " ..." if len(chs) > 6 else ""
         p(f"    {fs:>8.1f} Hz  →  {len(chs):>2} channel(s): {', '.join(chs[:6])}{suffix}")
 
-    # -------------------------------------------------------------------------
-    # Confirm channel matching for full PSG set
-    # -------------------------------------------------------------------------
     matched = _match_channels(FULL_PSG_CHANNELS, channels)
 
     p(f"\n  Channel matching (full PSG set):")
@@ -475,9 +459,6 @@ def inspect_edf(edf_path: Path, epochs_1min: list, out: StringIO):
         status = matched.get(target, "[NOT FOUND]")
         p(f"    {target:<12}  {status:<30}")
 
-    # -------------------------------------------------------------------------
-    # Confirm slicing on first 1-minute epoch
-    # -------------------------------------------------------------------------
     if not epochs_1min:
         p("\n  [WARN] No 1-minute epochs — skipping slice confirmation.")
         return raw
@@ -529,8 +510,7 @@ def _run_tsfel(tsfel, cfg, signal: np.ndarray, fs: int, target: str) -> dict:
 FEAT_FULL_DIR = OUTPUT_DIR / "features" / "full"
 
 
-def extract_features(raw, epochs_1min: list, sid: str,
-                     out: StringIO, verbose: bool = True) -> dict | None:
+def extract_features(raw, epochs_1min: list, sid: str, out: StringIO) -> dict | None:
     """
     Run TSFEL feature extraction for one subject.
 
@@ -539,9 +519,7 @@ def extract_features(raw, epochs_1min: list, sid: str,
     raw        : MNE Raw object (preloaded)
     epochs_1min: trimmed 1-minute epoch list
     sid        : zero-padded subject ID string, e.g. "0001"
-    out        : StringIO buffer (only written to when verbose=True)
-    verbose    : if True, print the channel table, feature counts, and
-                 per-epoch progress; if False, run silently
+    out        : StringIO buffer for detailed log output
 
     Returns
     -------
@@ -549,9 +527,7 @@ def extract_features(raw, epochs_1min: list, sid: str,
     or None on fatal error.
     """
     def p(line=""):
-        if verbose:
-            print(line)
-            out.write(line + "\n")
+        out.write(line + "\n")
 
     p("\n" + "=" * 70)
     p("  STEP 4 — TSFEL feature extraction (channel-specific sampling rates)")
@@ -573,7 +549,6 @@ def extract_features(raw, epochs_1min: list, sid: str,
         p("  [ERROR] No target channels found — aborting.")
         return None
 
-    # ---- Channel sampling-rate table (verbose only) ----
     p(f"\n  {'Channel':<10}  {'EDF name':<30}  {'Orig Hz':>7}  {'Target Hz':>9}"
       f"  {'Orig samp':>9}  {'Resamp samp':>11}")
     p("  " + "─" * 76)
@@ -583,26 +558,7 @@ def extract_features(raw, epochs_1min: list, sid: str,
         p(f"  {target:<10}  {edf_ch:<30}  {orig_fs:>7}  {tgt_fs:>9}"
           f"  {orig_fs * 60:>9}  {tgt_fs * 60:>11}")
 
-    # ---- Feature count on dummy signals (verbose only) ----
-    cfg = tsfel.get_features_by_domain()
-    if verbose:
-        dummy_64 = np.zeros(64 * 60, dtype=np.float32)
-        dummy_32 = np.zeros(32 * 60, dtype=np.float32)
-        try:
-            n64 = tsfel.time_series_features_extractor(
-                cfg, dummy_64, fs=64, verbose=0).shape[1]
-            n32 = tsfel.time_series_features_extractor(
-                cfg, dummy_32, fs=32, verbose=0).shape[1]
-            p(f"\n  Features per channel @ 64 Hz : {n64}")
-            p(f"  Features per channel @ 32 Hz : {n32}")
-            c64 = sum(1 for t in found_full if CHANNEL_TARGET_FS.get(t, 32) == 64)
-            c32 = sum(1 for t in found_full if CHANNEL_TARGET_FS.get(t, 32) == 32)
-            tf  = c64 * n64 + c32 * n32
-            p(f"  Expected full PSG columns    : {c64}×{n64} + {c32}×{n32}"
-              f" = {tf} features + 1 label = {tf + 1} columns")
-        except Exception as e:
-            p(f"  [WARN] Could not count features on dummy signal: {e}")
-
+    cfg      = tsfel.get_features_by_domain()
     t0       = time.time()
     rows_full = []
     n_epochs  = len(epochs_1min)
@@ -623,46 +579,31 @@ def extract_features(raw, epochs_1min: list, sid: str,
         row["label"] = label
         rows_full.append(row)
 
-        if verbose and ((ep_idx + 1) % 50 == 0 or (ep_idx + 1) == n_epochs):
+        if (ep_idx + 1) % 50 == 0 or (ep_idx + 1) == n_epochs:
             p(f"    epoch {ep_idx + 1:>4}/{n_epochs}  ({time.time() - t0:.1f}s elapsed)")
 
     elapsed = time.time() - t0
 
-    # ---- Save CSV ----
     FEAT_FULL_DIR.mkdir(parents=True, exist_ok=True)
-    full_path = None
-    results   = {}
+    full_path  = None
+    label_dist = Counter()
 
     if rows_full:
         df = pd.DataFrame(rows_full)
         df = df[[c for c in df.columns if c != "label"] + ["label"]]
-        full_path = FEAT_FULL_DIR / f"mesa_features_full_{sid}.csv"
+        full_path  = FEAT_FULL_DIR / f"mesa_features_full_{sid}.csv"
         df.to_csv(full_path, index=False)
-        results["full"] = (df, full_path)
+        label_dist = Counter(df["label"])
 
-    # ---- Verbose summary ----
-    p(f"\n  {'─' * 60}")
-    p(f"  FEATURE EXTRACTION SUMMARY")
-    p(f"  {'─' * 60}")
-    p(f"  Time taken : {elapsed:.1f}s  ({elapsed / 60:.1f} min)")
-
-    label_dist: Counter = Counter()
-    for name, (df, path) in results.items():
-        dist  = Counter(df["label"])
-        label_dist.update(dist)
+        p(f"\n  Saved: {full_path}")
+        p(f"  Shape: {df.shape[0]} rows × {df.shape[1]} columns")
+        p(f"  Time : {elapsed:.1f}s  ({elapsed / 60:.1f} min)")
+        p(f"  Label distribution:")
         total = len(df)
-        p(f"\n  [{name.upper()}]  → {path}")
-        p(f"    Rows × Columns : {df.shape[0]} × {df.shape[1]}")
-        p(f"    First 5 feature columns:")
-        for fc in [c for c in df.columns if c != "label"][:5]:
-            p(f"      {fc}")
-        p(f"    Label distribution:")
         for lbl in ["AWAKE", "LIGHT", "DEEP", "REM"]:
-            count = dist.get(lbl, 0)
+            count = label_dist.get(lbl, 0)
             if count:
-                p(f"      {lbl:<10}  {count:>5}  ({count / total * 100:5.1f}%)")
-
-    p(f"  {'─' * 60}")
+                p(f"    {lbl:<10}  {count:>5}  ({count / total * 100:5.1f}%)")
 
     return {
         "elapsed":    elapsed,
@@ -680,13 +621,13 @@ RESUME_MIN_BYTES  = 10 * 1024   # 10 KB — files smaller than this are re-proce
 # Per-subject pipeline
 # =============================================================================
 
-def process_subject(sid: str, verbose: bool) -> dict:
+def process_subject(sid: str, save_log: bool = False) -> dict:
     """
     Run the full pipeline (steps 1–4) for one subject.
 
     Returns a dict with keys:
       sid, status ('processed'|'skipped'|'missing'|'exists'),
-      n_epochs, n_awake, n_light, n_deep, n_rem,
+      n_epochs, n_awake, n_light, n_deep, n_rem, n_mixed,
       processing_time_seconds, label_dist, full_path
     """
     xml_path = ANNOT_DIR / f"mesa-sleep-{sid}-nsrr.xml"
@@ -696,6 +637,7 @@ def process_subject(sid: str, verbose: bool) -> dict:
     def _empty(status: str) -> dict:
         return {"sid": sid, "status": status,
                 "n_epochs": 0, "n_awake": 0, "n_light": 0, "n_deep": 0, "n_rem": 0,
+                "n_mixed": 0,
                 "processing_time_seconds": 0.0, "label_dist": Counter(),
                 "full_path": None}
 
@@ -718,39 +660,31 @@ def process_subject(sid: str, verbose: bool) -> dict:
                 "n_light":  dist.get("LIGHT", 0),
                 "n_deep":   dist.get("DEEP",  0),
                 "n_rem":    dist.get("REM",   0),
+                "n_mixed":  0,
                 "processing_time_seconds": 0.0,
                 "label_dist": dist,
                 "full_path": full_out}
 
-    buf  = StringIO()
-    null = StringIO()   # silent sink for batch mode
+    buf = StringIO()
 
-    def _out(v: bool):
-        return buf if v else null
-
-    if verbose:
-        hdr = f"\nMESA Feature Extraction — Subject {sid}\n{'=' * 70}"
-        print(hdr); buf.write(hdr + "\n")
-
-    epochs_30s  = parse_annotations(xml_path, _out(verbose))
-    epochs_1min = combine_to_one_minute(epochs_30s, _out(verbose))
+    epochs_30s           = parse_annotations(xml_path, buf)
+    epochs_1min, n_mixed = combine_to_one_minute(epochs_30s, buf)
 
     if not epochs_1min:
         return _empty("skipped")
 
-    raw = inspect_edf(edf_path, epochs_1min, _out(verbose))
+    raw = inspect_edf(edf_path, epochs_1min, buf)
     if raw is None:
         return _empty("skipped")
 
-    feat_result = extract_features(raw, epochs_1min, sid, buf, verbose=verbose)
+    feat_result = extract_features(raw, epochs_1min, sid, buf)
     if feat_result is None:
         return _empty("skipped")
 
-    if verbose:
+    if save_log:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
             f.write(buf.getvalue())
-        print(f"\nInspection log saved → {OUTPUT_FILE}")
 
     dist = feat_result["label_dist"]
     return {"sid": sid, "status": "processed",
@@ -759,9 +693,22 @@ def process_subject(sid: str, verbose: bool) -> dict:
             "n_light":  dist.get("LIGHT", 0),
             "n_deep":   dist.get("DEEP",  0),
             "n_rem":    dist.get("REM",   0),
+            "n_mixed":  n_mixed,
             "processing_time_seconds": feat_result["elapsed"],
             "label_dist": dist,
             "full_path": feat_result["full_path"]}
+
+
+# =============================================================================
+# Helpers
+# =============================================================================
+
+def _fmt_time(secs: float) -> str:
+    if secs >= 3600:
+        return f"{secs / 3600:.1f} hr"
+    if secs >= 60:
+        return f"{secs / 60:.1f} min"
+    return f"{secs:.0f}s"
 
 
 # =============================================================================
@@ -770,40 +717,57 @@ def process_subject(sid: str, verbose: bool) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="python scripts/extract_mesa_features.py",
+        prog="python scripts/02_extract_mesa_features.py",
         description="Extract TSFEL features from MESA PSG data.",
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--subject", metavar="ID",
-                      help="Process a single subject by 4-digit ID (verbose output).")
+                      help="Process a single subject by 4-digit ID.")
     mode.add_argument("--subjects", metavar="N", type=int,
-                      help="Process the first N subjects sequentially (quiet batch mode).")
+                      help="Process the first N subjects sequentially (batch mode).")
     args = parser.parse_args()
 
     # ------------------------------------------------------------------ single
     if args.subjects is None:
-        sid = (args.subject or "0001").zfill(4)
-        process_subject(sid, verbose=True)
+        sid    = (args.subject or "0001").zfill(4)
+        result = process_subject(sid, save_log=True)
+        status = result["status"]
+        dist   = result["label_dist"]
+
+        print(f"Subject {sid}")
+        if status == "missing":
+            print(f"  Error  : EDF or XML not found")
+        elif status == "skipped":
+            print(f"  Error  : no clean epochs (see {OUTPUT_FILE})")
+        else:
+            n = result["n_epochs"]
+            tag = "  (already done)" if status == "exists" else ""
+            print(f"  Epochs : {n}{tag}"
+                  f"  (AWAKE {dist.get('AWAKE', 0)}"
+                  f" / LIGHT {dist.get('LIGHT', 0)}"
+                  f" / DEEP {dist.get('DEEP', 0)}"
+                  f" / REM {dist.get('REM', 0)})")
+            if status == "processed":
+                print(f"  Dropped: {result['n_mixed']} mixed-label pairs")
+                print(f"  Time   : {result['processing_time_seconds'] / 60:.1f} min")
+            print(f"  Saved  : {result['full_path'].relative_to(ROOT_DIR)}")
         return
 
     # ------------------------------------------------------------------ batch
     n_target      = args.subjects
     t_batch_start = time.time()
-    total_dist:  Counter = Counter()
-    meta_rows:   list    = []
-    n_processed  = 0   # newly extracted this run
-    n_resumed    = 0   # already existed, counted toward target
-    n_skipped    = 0   # missing or failed
-    total_epochs = 0
-    total_proc_s = 0.0  # only time for newly processed subjects
-
-    SEP = "\u2550" * 42   # ══════...
-
-    print(f"\n{SEP}")
-    print(f" MESA batch extraction — {n_target} subject(s)")
-    print(SEP)
+    total_dist:   Counter = Counter()
+    meta_rows:    list    = []
+    n_processed   = 0
+    n_resumed     = 0
+    n_skipped     = 0
+    total_epochs  = 0
+    total_proc_s  = 0.0
 
     consecutive_missing = 0
+
+    pbar = tqdm(total=n_target, desc="Extracting MESA features",
+                unit="subject", dynamic_ncols=True)
 
     for i in range(1, 10000):
         done = n_processed + n_resumed
@@ -817,85 +781,77 @@ def main():
         if not xml_path.exists() and not edf_path.exists():
             consecutive_missing += 1
             if consecutive_missing >= 20:
-                # No more subjects to find — stop early
                 break
             continue
-        consecutive_missing = 0   # reset on any found file
+        consecutive_missing = 0
 
-        result = process_subject(sid, verbose=False)
+        result = process_subject(sid, save_log=False)
         status = result["status"]
 
-        # Accumulate metadata for every subject we touched
         meta_rows.append({
-            "subject_id":               sid,
-            "n_epochs":                 result["n_epochs"],
-            "n_awake":                  result["n_awake"],
-            "n_light":                  result["n_light"],
-            "n_deep":                   result["n_deep"],
-            "n_rem":                    result["n_rem"],
-            "processing_time_seconds":  result["processing_time_seconds"],
-            "status":                   status,
+            "subject_id":              sid,
+            "n_epochs":                result["n_epochs"],
+            "n_awake":                 result["n_awake"],
+            "n_light":                 result["n_light"],
+            "n_deep":                  result["n_deep"],
+            "n_rem":                   result["n_rem"],
+            "processing_time_seconds": result["processing_time_seconds"],
+            "status":                  status,
         })
 
-        if status == "missing" or status == "skipped":
+        if status in ("missing", "skipped"):
             n_skipped += 1
-            print(f"  [{done + 1:>4}/{n_target}] mesa-sleep-{sid}"
-                  f"  —  {status}")
+            done = n_processed + n_resumed
+            tqdm.write(f"[{done + 1}/{n_target}] {sid} — skipped (no EDF)")
             continue
 
-        n_ep  = result["n_epochs"]
+        n_ep = result["n_epochs"]
         total_epochs += n_ep
         total_dist   += result["label_dist"]
 
         if status == "exists":
             n_resumed += 1
-            tag = "already done"
         else:
             n_processed  += 1
             total_proc_s += result["processing_time_seconds"]
-            tag = f"{result['processing_time_seconds'] / 60:.1f} min"
 
         done = n_processed + n_resumed
-        print(f"  [{done:>4}/{n_target}] mesa-sleep-{sid}"
-              f"  —  {n_ep:>4} epochs  —  {tag}  —  saved")
+        pbar.update(1)
 
-    elapsed_total = time.time() - t_batch_start
+        if status == "processed":
+            t_min = result["processing_time_seconds"] / 60
+            tqdm.write(f"[{done}/{n_target}] {sid}"
+                       f" — {n_ep} epochs"
+                       f" — {t_min:.1f} min"
+                       f" — saved")
+
+    pbar.close()
 
     # ---- Save metadata CSV ----
     BATCH_SUMMARY_CSV.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(meta_rows).to_csv(BATCH_SUMMARY_CSV, index=False)
 
     # ---- Final summary ----
-    grand = sum(total_dist.values())
-    avg_s = (total_proc_s / n_processed) if n_processed > 0 else 0.0
+    elapsed_total = time.time() - t_batch_start
+    grand         = sum(total_dist.values())
+    avg_s         = (total_proc_s / n_processed) if n_processed > 0 else 0.0
 
-    def _fmt_time(secs: float) -> str:
-        h = int(secs // 3600)
-        m = int((secs % 3600) // 60)
-        s = int(secs % 60)
-        if h > 0:
-            return f"{h}h {m:02d}m {s:02d}s"
-        if m > 0:
-            return f"{m}m {s:02d}s"
-        return f"{s}s"
-
+    SEP = "\u2550" * 34
     print(f"\n{SEP}")
-    print(f" BATCH COMPLETE")
+    print(f" MESA Feature Extraction Complete")
     print(SEP)
-    print(f" Subjects processed : {n_processed + n_resumed}"
-          f"  ({n_processed} new, {n_resumed} resumed)")
-    print(f" Subjects skipped   : {n_skipped}  (missing EDF/XML or failed)")
-    print(f" Total epochs       : {total_epochs:,}")
-    print(f" Total time         : {_fmt_time(elapsed_total)}")
-    print(f" Avg time/subject   : {_fmt_time(avg_s)}"
-          f"  (newly processed only)")
+    print(f" Processed    : {n_processed} subjects")
+    print(f" Already done : {n_resumed}")
+    print(f" Skipped      : {n_skipped}  (no EDF found)")
+    print(f" Total epochs : {total_epochs:,}")
+    print(f" Total time   : {_fmt_time(elapsed_total)}")
+    print(f" Avg/subject  : {_fmt_time(avg_s)}")
     if grand > 0:
-        print(f"\n Combined label distribution:")
+        print(f"\n Label distribution (all subjects):")
         for lbl in ["AWAKE", "LIGHT", "DEEP", "REM"]:
             c = total_dist.get(lbl, 0)
             if c:
                 print(f"   {lbl:<8}  {c:>8,}  ({c / grand * 100:5.1f}%)")
-    print(f"\n Metadata saved → {BATCH_SUMMARY_CSV}")
     print(SEP)
 
 
