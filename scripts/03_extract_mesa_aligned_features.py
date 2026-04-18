@@ -1,13 +1,15 @@
 """
 scripts/03_extract_mesa_aligned_features.py
 ===========================================
-Extract 24 aligned features from MESA EDF files for cross-dataset comparison.
+Extract 17 aligned features from MESA EDF files for cross-dataset comparison.
 
 Features are designed to match what TIHM wearables can provide.
+Spread statistics (hr_std/min/max, rr_std/min/max, snore_std) are excluded
+because TIHM only provides one scalar value per minute — keeping them would
+create a permanently-NaN column gap between datasets.
 
-Feature groups (24 total):
-  Signal stats   (11): hr_mean/std/min/max/median, rr_mean/std/min/max,
-                        snore_pct, snore_std
+Feature groups (17 total):
+  Signal stats   ( 4): hr_mean, hr_median, rr_mean, snore_pct
   Lag            ( 7): hr_lag1-3, rr_lag1-3, snore_lag1
   Rolling window ( 4): hr_rolling_mean_5, hr_rolling_std_5,
                         rr_rolling_mean_5, rr_rolling_std_5
@@ -55,9 +57,9 @@ _DS_RATIOS = {64: (1, 4), 32: (1, 8)}
 _CH_FS     = {"HR": 32, "Flow": 32, "Snore": 64}
 
 FEATURE_COLS = [
-    "hr_mean", "hr_std", "hr_min", "hr_max", "hr_median",
-    "rr_mean", "rr_std", "rr_min", "rr_max",
-    "snore_pct", "snore_std",
+    "hr_mean", "hr_median",
+    "rr_mean",
+    "snore_pct",
     "hr_lag1", "hr_lag2", "hr_lag3",
     "rr_lag1", "rr_lag2", "rr_lag3",
     "snore_lag1",
@@ -65,7 +67,7 @@ FEATURE_COLS = [
     "rr_rolling_mean_5", "rr_rolling_std_5",
     "age_group", "sex",
 ]
-assert len(FEATURE_COLS) == 24
+assert len(FEATURE_COLS) == 17
 
 
 # =============================================================================
@@ -121,18 +123,13 @@ def _downsample(signal: np.ndarray, channel: str) -> np.ndarray:
     return resample_poly(signal, up, dn).astype(np.float32)
 
 
-def estimate_rr_bpm(flow_signal: np.ndarray, fs: int) -> tuple[float, float, float, float]:
+def estimate_rr_bpm(flow_signal: np.ndarray, fs: int) -> float:
     """
-    Estimate respiratory rate in breaths per minute from raw Flow channel.
+    Estimate mean respiratory rate in breaths per minute from raw Flow channel.
 
     Flow alternates positive (inhale) and negative (exhale). Taking the
-    absolute value turns each breath cycle into a peak, then find_peaks
-    locates each breath.
-
-    Returns (rr_mean, rr_std, rr_min, rr_max) all in breaths per minute.
-    rr_std / rr_min / rr_max are derived from inter-peak intervals so they
-    reflect within-epoch breathing variability.
-    rr_std / rr_min / rr_max are NaN when fewer than 2 peaks are detected.
+    absolute value turns each breath cycle into a peak; find_peaks counts them.
+    Returns rr_mean (breaths/min), or NaN if the signal is empty.
     """
     abs_signal   = np.abs(flow_signal)
     min_distance = int(fs * 1.5)          # max 40 breaths/min → ≥1.5 s apart
@@ -141,20 +138,7 @@ def estimate_rr_bpm(flow_signal: np.ndarray, fs: int) -> tuple[float, float, flo
     peaks, _ = find_peaks(abs_signal, distance=min_distance, prominence=prominence)
 
     duration_minutes = len(flow_signal) / fs / 60
-    rr_mean = len(peaks) / duration_minutes if duration_minutes > 0 else np.nan
-
-    if len(peaks) >= 2:
-        intervals_sec = np.diff(peaks) / fs   # seconds between peaks
-        intervals_bpm = 60.0 / intervals_sec  # convert to BPM
-        rr_std = float(np.std(intervals_bpm, ddof=1)) if len(intervals_bpm) > 1 else 0.0
-        rr_min = float(np.min(intervals_bpm))
-        rr_max = float(np.max(intervals_bpm))
-    else:
-        rr_std = np.nan
-        rr_min = np.nan
-        rr_max = np.nan
-
-    return float(rr_mean), rr_std, rr_min, rr_max
+    return float(len(peaks) / duration_minutes) if duration_minutes > 0 else np.nan
 
 
 def _signal_stats_for_epoch(
@@ -186,20 +170,13 @@ def _signal_stats_for_epoch(
     if hr.size == 0 or flow.size == 0 or snore.size == 0:
         return None
 
-    rr_mean, rr_std, rr_min, rr_max = estimate_rr_bpm(flow, fs=_CH_FS["Flow"])
+    rr_mean = estimate_rr_bpm(flow, fs=_CH_FS["Flow"])
 
     return {
         "hr_mean":   float(np.mean(hr)),
-        "hr_std":    float(np.std(hr,    ddof=1)) if len(hr)    > 1 else 0.0,
-        "hr_min":    float(np.min(hr)),
-        "hr_max":    float(np.max(hr)),
         "hr_median": float(np.median(hr)),
         "rr_mean":   rr_mean,
-        "rr_std":    rr_std,
-        "rr_min":    rr_min,
-        "rr_max":    rr_max,
         "snore_pct": float(np.mean(np.abs(snore) > SNORE_THRESHOLD)),
-        "snore_std": float(np.std(snore, ddof=1)) if len(snore) > 1 else 0.0,
     }
 
 
