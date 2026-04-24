@@ -9,4 +9,13 @@ scikit-learn
 matplotlib
 seaborn
 xgboost
+shap
+imbalanced-learn
+joblib
 requests
+tensorboard
+
+# PyTorch with CUDA 12.1 (driver >=525 required; RTX 2070 with driver 581.57 / CUDA 13.0)
+torch==2.1.0+cu121
+torchvision==0.16.0+cu121
+--extra-index-url https://download.pytorch.org/whl/cu121

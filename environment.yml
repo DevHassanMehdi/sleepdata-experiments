@@ -12,6 +12,7 @@
 name: sleepdata
 
 channels:
+  - pytorch
   - conda-forge
   - defaults
 
@@ -24,6 +25,7 @@ dependencies:
   - numpy
   - scipy
   - scikit-learn
+  - joblib
 
   # Visualisation
   - matplotlib
@@ -33,10 +35,18 @@ dependencies:
   - tqdm
   - requests
 
+  # PyTorch with CUDA 12.1 (driver 581.57 / CUDA 13.0 on this machine)
+  - pytorch::pytorch=2.1.0=py3.11_cuda12.1_cudnn8_0
+  - pytorch::torchvision=0.16.0
+  - pytorch::pytorch-cuda=12.1
+
   # pip-only packages
   - pip
   - pip:
     - mne
     - tsfel
     - xgboost
+    - shap
+    - imbalanced-learn
+    - tensorboard
     - python-dotenv
