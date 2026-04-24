@@ -21,7 +21,6 @@ def train_pytorch_model(
     patience: int,
     writer,
     fold: int,
-    model_name: str,
 ) -> tuple[nn.Module, dict]:
     """
     Train a PyTorch model with early stopping and mixed-precision (AMP).
@@ -118,6 +117,11 @@ def compute_metrics(
         roc_auc_score,
     )
 
+    # Clip to avoid log(0), then re-normalise so rows sum to exactly 1.0.
+    # sklearn roc_auc_score does a strict sum==1 check; clipping alone breaks it.
+    y_proba = np.clip(y_proba, 1e-7, 1 - 1e-7)
+    y_proba = y_proba / y_proba.sum(axis=1, keepdims=True)
+
     metrics = {
         "accuracy": accuracy_score(y_true, y_pred),
         "macro_f1": f1_score(y_true, y_pred, average="macro", zero_division=0),
@@ -128,11 +132,30 @@ def compute_metrics(
         metrics[f"f1_{name.lower()}"] = float(per_class[i]) if i < len(per_class) else 0.0
 
     try:
-        metrics["roc_auc"] = float(
-            roc_auc_score(y_true, y_proba, multi_class="ovr", average="macro")
-        )
-    except Exception:
+        present_classes = np.unique(y_true)
+        n_classes       = y_proba.shape[1]
+        # Cast to float64: float32 division leaves sums ~1e-7 off 1.0, which
+        # fails sklearn's strict atol=1e-8 check inside roc_auc_score.
+        if len(present_classes) == n_classes:
+            p64 = y_proba.astype(np.float64)
+            p64 = p64 / p64.sum(axis=1, keepdims=True)
+            metrics["roc_auc"] = float(
+                roc_auc_score(y_true, p64, multi_class="ovr", average="macro")
+            )
+        else:
+            # Missing classes — slice to present classes and renorm that subset
+            p64 = y_proba[:, present_classes].astype(np.float64)
+            p64 = p64 / p64.sum(axis=1, keepdims=True)
+            metrics["roc_auc"] = float(
+                roc_auc_score(
+                    y_true, p64,
+                    multi_class="ovr", average="macro",
+                    labels=present_classes,
+                )
+            )
+    except Exception as e:
         metrics["roc_auc"] = float("nan")
+        print(f"  [warn] ROC-AUC failed: {e}", flush=True)
 
     try:
         metrics["pr_auc"] = float(np.mean([

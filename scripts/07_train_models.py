@@ -466,24 +466,45 @@ def compute_metrics(
     y_proba: np.ndarray,
 ) -> dict[str, float]:
     """Compute accuracy, per-class F1, macro F1, ROC-AUC, PR-AUC."""
+    # Clip to avoid log(0), then re-normalise so rows still sum to exactly 1.0.
+    # sklearn roc_auc_score does a strict sum==1 check; clipping alone breaks it.
+    y_proba = np.clip(y_proba, 1e-7, 1 - 1e-7)
+    y_proba = y_proba / y_proba.sum(axis=1, keepdims=True)
+
     acc      = accuracy_score(y_true, y_pred)
     macro_f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
     per_cls  = f1_score(y_true, y_pred, average=None, zero_division=0,
                         labels=[0, 1, 2, 3])
 
     try:
-        roc_auc = float(roc_auc_score(
-            y_true, y_proba, multi_class="ovr", average="macro", labels=[0, 1, 2, 3]
-        ))
-    except ValueError:
+        present   = np.unique(y_true)
+        n_classes = y_proba.shape[1]
+        # Cast to float64: float32 division leaves sums ~1e-7 off 1.0, which
+        # fails sklearn's strict atol=1e-8 check inside roc_auc_score.
+        if len(present) == n_classes:
+            p64 = y_proba.astype(np.float64)
+            p64 = p64 / p64.sum(axis=1, keepdims=True)
+            roc_auc = float(roc_auc_score(
+                y_true, p64, multi_class="ovr", average="macro"
+            ))
+        else:
+            # Missing classes — slice to present classes and renorm that subset
+            p64 = y_proba[:, present].astype(np.float64)
+            p64 = p64 / p64.sum(axis=1, keepdims=True)
+            roc_auc = float(roc_auc_score(
+                y_true, p64, multi_class="ovr", average="macro",
+                labels=present,
+            ))
+    except Exception as e:
         roc_auc = float("nan")
+        print(f"  [warn] ROC-AUC failed: {e}", flush=True)
 
     try:
         pr_auc = float(np.mean([
             average_precision_score((y_true == i).astype(int), y_proba[:, i])
             for i in range(len(CONFIG["label_names"]))
         ]))
-    except ValueError:
+    except Exception:
         pr_auc = float("nan")
 
     return {
@@ -678,15 +699,43 @@ def _tb_log_feature_importance(
 ) -> None:
     if writer is None or not hasattr(model, "feature_importances_"):
         return
+
+    # SVG saved to outputs/figures/ for thesis; figure is closed inside plot_feature_importance
     fig_path = plot_feature_importance(model, feature_names, step_num, model_name)
     if fig_path is None or not fig_path.exists():
         return
-    img = plt.imread(str(fig_path))
+
+    # Render a separate PNG for TensorBoard (plt.imread only works with raster formats)
+    png_path = fig_path.with_suffix(".png")
+    top_n    = min(30, len(feature_names))
+    importances = model.feature_importances_
+    top_idx     = np.argsort(importances)[::-1][:top_n]
+    top_names   = [feature_names[i] for i in top_idx]
+    top_vals    = importances[top_idx]
+
+    fig, ax = plt.subplots(figsize=(8, max(4, top_n * 0.3 + 1)))
+    ax.barh(range(top_n), top_vals[::-1])
+    ax.set_yticks(range(top_n))
+    ax.set_yticklabels(top_names[::-1], fontsize=7)
+    ax.set_xlabel("Importance")
+    ax.set_title(
+        f"Step {step_num} — Top {top_n} features"
+        f" — {model_name.replace('_', ' ').title()}"
+    )
+    plt.tight_layout()
+    fig.savefig(png_path, format="png", dpi=100, bbox_inches="tight")
+    plt.close(fig)
+
+    img = plt.imread(str(png_path))
     if img.ndim == 2:
         img = np.stack([img] * 3, axis=-1)
     elif img.shape[2] == 4:
         img = img[:, :, :3]
-    writer.add_image("feature_importance", img.transpose(2, 0, 1), global_step=0)
+    writer.add_image(
+        f"feature_importance/step{step_num}_{model_name}",
+        img.transpose(2, 0, 1),
+        global_step=0,
+    )
 
 
 # =============================================================================
@@ -1015,7 +1064,7 @@ def run_pytorch_step(
             model=model, train_loader=train_loader, val_loader=val_loader,
             optimizer=optimizer, criterion=criterion, scheduler=scheduler,
             device=device, epochs=cfg["epochs"], patience=cfg["patience"],
-            writer=writer, fold=fold, model_name=model_name,
+            writer=writer, fold=fold,
         )
 
         # Predict on validation set
