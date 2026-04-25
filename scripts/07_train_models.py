@@ -341,14 +341,21 @@ def load_step3() -> tuple[pd.DataFrame, np.ndarray, pd.DataFrame, np.ndarray]:
     return X_train, y_train, X_test, y_test
 
 
-def load_step4() -> tuple[pd.DataFrame, np.ndarray, pd.DataFrame, np.ndarray]:
+def load_step4(method: str = "zscore") -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Train: MESA harmonized.  Test: TIHM harmonized.
-    Requires script 08 to have generated outputs/features/harmonized/.
+
+    method : 'zscore' or 'combat' — selects which harmonized files to load.
+    Requires script 08 to have been run first.
+
+    Returns numpy arrays (not DataFrames) — TIHM uses patient_id not subject_id,
+    so metadata columns are excluded explicitly rather than relying on _feature_cols.
     """
+    assert method in ("zscore", "combat"), f"Unknown method: {method!r}"
+
     harm_dir  = ROOT_DIR / "outputs/features/harmonized"
-    mesa_path = harm_dir / "mesa_harmonized_all.csv"
-    tihm_path = harm_dir / "tihm_harmonized_all.csv"
+    mesa_path = harm_dir / f"mesa_{method}.csv"
+    tihm_path = harm_dir / f"tihm_{method}.csv"
 
     for p in (mesa_path, tihm_path):
         if not p.exists():
@@ -356,22 +363,36 @@ def load_step4() -> tuple[pd.DataFrame, np.ndarray, pd.DataFrame, np.ndarray]:
                 f"{p} not found. Run script 08 first to generate harmonized features."
             )
 
-    train_df  = pd.read_csv(mesa_path)
-    test_df   = pd.read_csv(tihm_path)
-    train_df  = _encode_labels(train_df)
-    test_df   = _encode_labels(test_df)
-    feat_cols = _feature_cols(train_df)
-    train_df  = _clean_nans(train_df, feat_cols)
-    test_df   = _clean_nans(test_df, feat_cols)
+    mesa_df = pd.read_csv(mesa_path)
+    tihm_df = pd.read_csv(tihm_path)
 
-    X_train = train_df[feat_cols]
-    y_train = train_df["label"].values.astype(int)
-    X_test  = test_df[feat_cols]
-    y_test  = test_df["label"].values.astype(int)
+    # Exclude all metadata — MESA has subject_id, TIHM has patient_id/session_id/epoch_index
+    meta_cols = {"label", "subject_id", "patient_id",
+                 "session_id", "epoch_index", "batch"}
+    feat_cols = [c for c in mesa_df.columns if c not in meta_cols]
 
-    print(f"  Train (MESA harmonized) : {len(X_train):,} epochs  {_fmt_dist(y_train)}",
+    # Drop NaN rows using feature columns only (avoids KeyError on mismatched metadata)
+    mesa_df = mesa_df.dropna(subset=feat_cols).reset_index(drop=True)
+    tihm_df = tihm_df.dropna(subset=feat_cols).reset_index(drop=True)
+
+    # Labels are now stored as integers in the harmonized CSVs; cast to int directly
+    mesa_df = mesa_df.dropna(subset=["label"]).reset_index(drop=True)
+    tihm_df = tihm_df.dropna(subset=["label"]).reset_index(drop=True)
+    mesa_df["label"] = mesa_df["label"].astype(int)
+    tihm_df["label"] = tihm_df["label"].astype(int)
+
+    X_train = mesa_df[feat_cols].values.astype(np.float32)
+    y_train = mesa_df["label"].values.astype(int)
+    X_test  = tihm_df[feat_cols].values.astype(np.float32)
+    y_test  = tihm_df["label"].values.astype(int)
+
+    print(f"  Train (MESA {method}): {len(X_train):,} epochs  "
+          f"AWAKE {(y_train==0).mean():.1%} / LIGHT {(y_train==1).mean():.1%} / "
+          f"DEEP {(y_train==2).mean():.1%} / REM {(y_train==3).mean():.1%}",
           flush=True)
-    print(f"  Test  (TIHM harmonized) : {len(X_test):,} epochs  {_fmt_dist(y_test)}",
+    print(f"  Test  (TIHM {method}): {len(X_test):,} epochs  "
+          f"AWAKE {(y_test==0).mean():.1%} / LIGHT {(y_test==1).mean():.1%} / "
+          f"DEEP {(y_test==2).mean():.1%} / REM {(y_test==3).mean():.1%}",
           flush=True)
     return X_train, y_train, X_test, y_test
 
@@ -950,12 +971,20 @@ def run_cross_dataset_step(
     y_train: np.ndarray,
     X_test: pd.DataFrame,
     y_test: np.ndarray,
+    tag: str = "",
 ) -> None:
-    abbr   = _MODEL_ABBR[model_name]
+    """
+    tag : optional suffix appended to all output filenames (e.g. 'zscore', 'combat').
+          Results in step4_rf_zscore_metrics.csv etc. when set.
+    """
+    abbr     = _MODEL_ABBR[model_name]
+    suffix   = f"_{tag}" if tag else ""
+    file_key = f"step{step_num}_{abbr}{suffix}"
+
     logger = _setup_logger(step_num, model_name)
     writer = _make_writer(step_num, model_name)
 
-    logger.info(f"Step {step_num} | {model_name} | "
+    logger.info(f"Step {step_num} | {model_name} | tag={tag or 'none'} | "
                 f"train={X_train.shape} test={X_test.shape}")
 
     cw    = compute_class_weights(y_train)
@@ -982,27 +1011,39 @@ def run_cross_dataset_step(
     )
     pred_df["y_true"] = y_test
     pred_df["y_pred"] = y_pred
-    pred_path = _p("predictions") / f"step{step_num}_{abbr}_predictions.csv"
+    pred_path = _p("predictions") / f"{file_key}_predictions.csv"
     pred_df.to_csv(pred_path, index=False)
 
     # Save metrics
     _p("results").mkdir(parents=True, exist_ok=True)
-    metrics_path = _p("results") / f"step{step_num}_{abbr}_metrics.csv"
+    metrics_path = _p("results") / f"{file_key}_metrics.csv"
     pd.DataFrame([m]).to_csv(metrics_path, index=False)
 
     _tb_log_metrics(writer, m, fold=0)
 
-    # Plots
+    # Plots — pass tag through to filename helpers via model_name+suffix workaround
     _p("figures").mkdir(parents=True, exist_ok=True)
-    cm_path  = plot_confusion_matrix(y_test, y_pred, step_num, model_name)
-    roc_path = plot_roc_curves(y_test, y_proba, step_num, model_name)
-    feat_names = list(X_train.columns)
-    fi_path    = plot_feature_importance(model, feat_names, step_num, model_name)
-    _tb_log_feature_importance(writer, model, feat_names, step_num, model_name)
+    abbr_tag    = f"{abbr}{suffix}"
+    cm_path     = _p("figures") / f"confusion_matrix_step{step_num}_{abbr_tag}.svg"
+    roc_path    = _p("figures") / f"roc_curves_step{step_num}_{abbr_tag}.svg"
+    fi_path_out = _p("figures") / f"feature_importance_step{step_num}_{abbr_tag}.svg"
+
+    # Reuse plot functions — they write to fixed paths internally, so call with
+    # a temporary model_name that embeds the tag for correct filename generation.
+    _tagged_model = model_name + suffix   # e.g. "random_forest_zscore"
+    _MODEL_ABBR[_tagged_model] = abbr_tag  # register abbreviation temporarily
+
+    cm_path  = plot_confusion_matrix(y_test, y_pred, step_num, _tagged_model)
+    roc_path = plot_roc_curves(y_test, y_proba, step_num, _tagged_model)
+    feat_names = list(X_train.columns) if hasattr(X_train, "columns") else []
+    fi_path    = plot_feature_importance(model, feat_names, step_num, _tagged_model)
+    _tb_log_feature_importance(writer, model, feat_names, step_num, _tagged_model)
+
+    del _MODEL_ABBR[_tagged_model]   # clean up temporary entry
 
     # Save model
     _p("models").mkdir(parents=True, exist_ok=True)
-    model_path = _p("models") / f"step{step_num}_{abbr}.pkl"
+    model_path = _p("models") / f"{file_key}.pkl"
     with open(model_path, "wb") as fh:
         pickle.dump(model, fh)
 
@@ -1250,21 +1291,50 @@ def run_pytorch_step(
 # =============================================================================
 
 def run_step(step_num: int, model_name: str, resume: bool = False) -> None:
-    abbr         = _MODEL_ABBR.get(model_name, model_name)
-    results_path = _p("results") / f"step{step_num}_{abbr}_metrics.csv"
+    abbr       = _MODEL_ABBR.get(model_name, model_name)
+    SEP        = "═" * 42
+    is_pytorch = MODEL_REGISTRY.get(model_name) == "pytorch"
 
+    # ── Step 4: runs twice ── zscore then combat ────────────────────
+    if step_num == 4:
+        print(f"\n{SEP}", flush=True)
+        print(f" STEP {step_num} — {_STEP_NAMES[step_num]}", flush=True)
+        print(f" Model: {model_name.replace('_', ' ').title()}", flush=True)
+        print(SEP, flush=True)
+
+        for method in ("zscore", "combat"):
+            results_path = (
+                _p("results") / f"step{step_num}_{abbr}_{method}_metrics.csv"
+            )
+            if resume and results_path.exists():
+                print(f"  [skip] {method.upper()} — results already exist",
+                      flush=True)
+                continue
+
+            print(f"\n  Harmonization: {method.upper()}", flush=True)
+            X_train, y_train, X_test, y_test = load_step4(method)
+
+            if is_pytorch:
+                run_pytorch_step(step_num, model_name, X_train, y_train,
+                                 groups=None, X_test=X_test, y_test=y_test)
+            else:
+                run_cross_dataset_step(step_num, model_name,
+                                       X_train, y_train, X_test, y_test,
+                                       tag=method)
+        print(SEP, flush=True)
+        return
+
+    # ── Steps 1–3: single run ────────────────────────────────────
+    results_path = _p("results") / f"step{step_num}_{abbr}_metrics.csv"
     if resume and results_path.exists():
         print(f"  [skip] Step {step_num} {model_name} — results already exist",
               flush=True)
         return
 
-    SEP = "\u2550" * 42
     print(f"\n{SEP}", flush=True)
     print(f" STEP {step_num} — {_STEP_NAMES[step_num]}", flush=True)
     print(f" Model: {model_name.replace('_', ' ').title()}", flush=True)
     print(SEP, flush=True)
-
-    is_pytorch = MODEL_REGISTRY.get(model_name) == "pytorch"
 
     if step_num == 1:
         X, y, groups = load_step1()
@@ -1289,16 +1359,8 @@ def run_step(step_num: int, model_name: str, resume: bool = False) -> None:
             run_cross_dataset_step(step_num, model_name,
                                    X_train, y_train, X_test, y_test)
 
-    elif step_num == 4:
-        X_train, y_train, X_test, y_test = load_step4()
-        if is_pytorch:
-            run_pytorch_step(step_num, model_name, X_train, y_train,
-                             groups=None, X_test=X_test, y_test=y_test)
-        else:
-            run_cross_dataset_step(step_num, model_name,
-                                   X_train, y_train, X_test, y_test)
-
     print(SEP, flush=True)
+
 
 
 # =============================================================================

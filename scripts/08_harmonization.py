@@ -110,9 +110,10 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
         frames.append(tmp)
     mesa_df = pd.concat(frames, ignore_index=True)
 
-    # Encode string labels if present
-    if mesa_df["label"].dtype == object:
+    # Encode labels — use is_integer_dtype because pandas StringDtype != object
+    if not pd.api.types.is_integer_dtype(mesa_df["label"]):
         mesa_df["label"] = mesa_df["label"].map(LABEL_MAP)
+    mesa_df["label"] = mesa_df["label"].astype(int)
 
     before = len(mesa_df)
     mesa_df = mesa_df.dropna(subset=FEATURE_COLS).reset_index(drop=True)
@@ -126,8 +127,9 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
         raise FileNotFoundError(f"TIHM aligned CSV not found: {TIHM_CSV}")
     tihm_df = pd.read_csv(TIHM_CSV)
 
-    if tihm_df["label"].dtype == object:
+    if not pd.api.types.is_integer_dtype(tihm_df["label"]):
         tihm_df["label"] = tihm_df["label"].map(LABEL_MAP)
+    tihm_df["label"] = tihm_df["label"].astype(int)
 
     before = len(tihm_df)
     tihm_df = tihm_df.dropna(subset=FEATURE_COLS).reset_index(drop=True)
@@ -372,6 +374,13 @@ def main():
     )
     print(f"  MMD after z-score: {mmd_zscore:.4f}", flush=True)
 
+    _label_enc = {"AWAKE": 0, "LIGHT": 1, "DEEP": 2, "REM": 3}
+    if not pd.api.types.is_integer_dtype(mesa_zsc["label"]):
+        mesa_zsc["label"] = mesa_zsc["label"].map(_label_enc)
+    mesa_zsc["label"] = mesa_zsc["label"].astype(int)
+    if not pd.api.types.is_integer_dtype(tihm_zsc["label"]):
+        tihm_zsc["label"] = tihm_zsc["label"].map(_label_enc)
+    tihm_zsc["label"] = tihm_zsc["label"].astype(int)
     mesa_zsc.to_csv(OUT_DIR / "mesa_zscore.csv", index=False)
     tihm_zsc.to_csv(OUT_DIR / "tihm_zscore.csv", index=False)
     print("  Saved: mesa_zscore.csv, tihm_zscore.csv\n", flush=True)
@@ -386,6 +395,13 @@ def main():
             gamma=gamma_used,
         )
         print(f"  MMD after ComBat: {mmd_combat:.4f}", flush=True)
+        _label_enc = {"AWAKE": 0, "LIGHT": 1, "DEEP": 2, "REM": 3}
+        if not pd.api.types.is_integer_dtype(mesa_cbt["label"]):
+            mesa_cbt["label"] = mesa_cbt["label"].map(_label_enc)
+        mesa_cbt["label"] = mesa_cbt["label"].astype(int)
+        if not pd.api.types.is_integer_dtype(tihm_cbt["label"]):
+            tihm_cbt["label"] = tihm_cbt["label"].map(_label_enc)
+        tihm_cbt["label"] = tihm_cbt["label"].astype(int)
         mesa_cbt.to_csv(OUT_DIR / "mesa_combat.csv", index=False)
         tihm_cbt.to_csv(OUT_DIR / "tihm_combat.csv", index=False)
         print("  Saved: mesa_combat.csv, tihm_combat.csv\n", flush=True)
