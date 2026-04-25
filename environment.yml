@@ -18,7 +18,7 @@ channels:
 
 dependencies:
   - python=3.11
-  - ruby          # required for: gem install nsrr
+  - ruby # required for: gem install nsrr
 
   # Data & ML
   - pandas
@@ -43,10 +43,11 @@ dependencies:
   # pip-only packages
   - pip
   - pip:
-    - mne
-    - tsfel
-    - xgboost
-    - shap
-    - imbalanced-learn
-    - tensorboard
-    - python-dotenv
+      - mne
+      - tsfel
+      - xgboost
+      - shap
+      - imbalanced-learn
+      - tensorboard
+      - python-dotenv
+      - neuroCombat
