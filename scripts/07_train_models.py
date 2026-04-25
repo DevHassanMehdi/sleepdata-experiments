@@ -68,7 +68,7 @@ sys.path.insert(0, str(ROOT_DIR))
 # PyTorch utils (imported lazily so the script works without torch installed)
 if _TORCH_OK:
     from utils.data_utils     import EpochDataset, SequenceDataset
-    from utils.training_utils import train_pytorch_model, get_sample_weights
+    from utils.training_utils import train_pytorch_model
     from utils.models.mlp     import SleepMLP
     from utils.models.lstm    import SleepLSTM
     from utils.models.cnn     import SleepCNN
@@ -225,10 +225,11 @@ def _clean_nans(df: pd.DataFrame, feat_cols: list[str]) -> pd.DataFrame:
 # Data loaders
 # =============================================================================
 
-def load_step1() -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+def load_step1() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Load all MESA full PSG feature CSVs (outputs/features/full/).
-    Returns X (DataFrame), y (int ndarray), groups (subject_id ndarray).
+    Returns X (float32 ndarray), y (int ndarray), groups (subject_id ndarray).
+    NaN and Inf values are imputed so PyTorch models receive clean input.
     """
     full_dir = _p("mesa_full")
     files    = sorted(full_dir.glob("mesa_features_full_*.csv"))
@@ -242,14 +243,41 @@ def load_step1() -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
         df["_subject_id"] = sid
         frames.append(df)
 
-    df        = pd.concat(frames, ignore_index=True)
-    df        = _encode_labels(df)
-    feat_cols = [c for c in _feature_cols(df) if c != "_subject_id"]
-    df        = _clean_nans(df, feat_cols)
+    combined = pd.concat(frames, ignore_index=True)
+    combined = _encode_labels(combined)
+    combined = combined.dropna(subset=["label"]).reset_index(drop=True)
 
-    X      = df[feat_cols]
-    y      = df["label"].values.astype(int)
-    groups = df["_subject_id"].values
+    # Get feature columns only
+    meta_cols    = ["label", "_subject_id"]
+    feature_cols = [c for c in combined.columns if c not in meta_cols]
+
+    # Report NaN situation
+    nan_count = combined[feature_cols].isna().sum().sum()
+    nan_cols  = int(combined[feature_cols].isna().any().sum())
+    print(f"  [info] TSFEL NaN values: {nan_count:,} across {nan_cols} feature columns",
+          flush=True)
+
+    # Fill NaN with column median; entire-NaN columns → 0
+    for col in feature_cols:
+        col_median = combined[col].median()
+        if np.isnan(col_median):
+            combined[col] = combined[col].fillna(0.0)
+        else:
+            combined[col] = combined[col].fillna(col_median)
+
+    # Replace any inf values
+    combined[feature_cols] = combined[feature_cols].replace(
+        [np.inf, -np.inf], 0.0)
+
+    # Final verification
+    nan_after = int(combined[feature_cols].isna().sum().sum())
+    inf_after = int(np.isinf(combined[feature_cols].values).sum())
+    print(f"  [info] After imputation — NaN: {nan_after}, Inf: {inf_after}",
+          flush=True)
+
+    X      = combined[feature_cols].values.astype(np.float32)
+    y      = combined["label"].values
+    groups = combined["_subject_id"].values
 
     print(f"  Loaded {len(X):,} epochs from {len(np.unique(groups))} subjects",
           flush=True)
@@ -749,12 +777,20 @@ def run_cv_step(
     y: np.ndarray,
     groups: np.ndarray,
 ) -> None:
-    abbr           = _MODEL_ABBR[model_name]
-    logger         = _setup_logger(step_num, model_name)
-    writer         = _make_writer(step_num, model_name)
-    n_folds        = CONFIG["n_folds"]
-    gkf            = GroupKFold(n_splits=n_folds)
-    do_feat_sel    = step_num == 1 and CONFIG["feature_selection"]["enabled"]
+    abbr    = _MODEL_ABBR[model_name]
+    logger  = _setup_logger(step_num, model_name)
+    writer  = _make_writer(step_num, model_name)
+    n_folds = CONFIG["n_folds"]
+    gkf     = GroupKFold(n_splits=n_folds)
+
+    # load_step1 returns numpy; load_step2 returns DataFrame — handle both.
+    X_is_df = isinstance(X, pd.DataFrame)
+    if X_is_df:
+        last_feat_cols = list(X.columns)
+        do_feat_sel    = step_num == 1 and CONFIG["feature_selection"]["enabled"]
+    else:
+        last_feat_cols = list(range(X.shape[1]))
+        do_feat_sel    = False   # feature_selection requires DataFrame column names
 
     logger.info(f"Step {step_num} | {model_name} | X={X.shape} | "
                 f"subjects={len(np.unique(groups))}")
@@ -764,7 +800,6 @@ def run_cv_step(
     all_y_pred    = []
     pred_parts    = []
     last_model    = None
-    last_feat_cols = list(X.columns)
 
     t0_step = time.time()
 
@@ -773,14 +808,24 @@ def run_cv_step(
     ):
         t0_fold = time.time()
 
-        X_tr, y_tr = X.iloc[train_idx], y[train_idx]
-        X_te, y_te = X.iloc[test_idx],  y[test_idx]
+        if X_is_df:
+            X_tr, y_tr = X.iloc[train_idx], y[train_idx]
+            X_te, y_te = X.iloc[test_idx],  y[test_idx]
+        else:
+            X_tr, y_tr = X[train_idx], y[train_idx]
+            X_te, y_te = X[test_idx],  y[test_idx]
+
+        # Safety net — should be zero after load_step1 imputation
+        if np.isnan(X_tr).sum() > 0 or np.isnan(X_te).sum() > 0:
+            print(f"  [warn] fold {fold} has NaN after load — applying nan_to_num",
+                  flush=True)
+            X_tr = np.nan_to_num(X_tr, nan=0.0, posinf=0.0, neginf=0.0)
+            X_te = np.nan_to_num(X_te, nan=0.0, posinf=0.0, neginf=0.0)
 
         if do_feat_sel:
             if fold == 1:
                 X_tr, X_te, selected_cols = feature_selection(X_tr, y_tr, X_te)
             else:
-                # Reuse same top-N selection from fold 1 to avoid per-fold noise
                 X_tr = X_tr[last_feat_cols]
                 X_te = X_te[last_feat_cols]
                 selected_cols = last_feat_cols
@@ -789,14 +834,30 @@ def run_cv_step(
         cw    = compute_class_weights(y_tr)
         model = get_model(model_name)
 
+        # Ensure arrays are numpy for both sklearn and XGBoost
+        X_tr_arr = X_tr.values if hasattr(X_tr, "values") else X_tr
+        X_te_arr = X_te.values if hasattr(X_te, "values") else X_te
+
+        # Normalise for PyTorch models — TSFEL features span many orders of
+        # magnitude which causes overflow in the forward pass without scaling.
+        # Tree-based models are scale-invariant so no scaling is applied there.
+        if model_name in ("mlp", "lstm", "cnn"):
+            from sklearn.preprocessing import StandardScaler
+            scaler   = StandardScaler()
+            X_tr_arr = scaler.fit_transform(X_tr_arr)
+            X_te_arr = scaler.transform(X_te_arr)
+            # Zero-variance columns produce NaN after scaling — replace with 0
+            X_tr_arr = np.nan_to_num(X_tr_arr, nan=0.0, posinf=0.0, neginf=0.0)
+            X_te_arr = np.nan_to_num(X_te_arr, nan=0.0, posinf=0.0, neginf=0.0)
+
         if model_name == "xgboost":
             sample_weight = np.array([cw[c] for c in y_tr])
-            model.fit(X_tr.values, y_tr, sample_weight=sample_weight)
+            model.fit(X_tr_arr, y_tr, sample_weight=sample_weight)
         else:
-            model.fit(X_tr, y_tr)
+            model.fit(X_tr_arr, y_tr)
 
-        y_pred  = model.predict(X_te)
-        y_proba = model.predict_proba(X_te)
+        y_pred  = model.predict(X_te_arr)
+        y_proba = model.predict_proba(X_te_arr)
 
         m = compute_metrics(y_te, y_pred, y_proba)
         fold_metrics.append(m)
@@ -1027,6 +1088,19 @@ def run_pytorch_step(
     def _run_fold(fold, X_tr, y_tr, X_te, y_te):
         nonlocal last_model
 
+        # Normalise features — fit on training fold only, apply to both
+        from sklearn.preprocessing import StandardScaler
+        _scaler  = StandardScaler()
+        X_tr_arr = _scaler.fit_transform(
+            X_tr.values if hasattr(X_tr, "values") else X_tr
+        )
+        X_te_arr = _scaler.transform(
+            X_te.values if hasattr(X_te, "values") else X_te
+        )
+        # Zero-variance columns produce NaN after scaling — replace with 0
+        X_tr_arr = np.nan_to_num(X_tr_arr, nan=0.0, posinf=0.0, neginf=0.0)
+        X_te_arr = np.nan_to_num(X_te_arr, nan=0.0, posinf=0.0, neginf=0.0)
+
         # Class weights → criterion
         cw_dict  = compute_class_weights(y_tr)
         cw_tensor = torch.FloatTensor(
@@ -1034,14 +1108,14 @@ def run_pytorch_step(
         ).to(device)
         criterion = nn.CrossEntropyLoss(weight=cw_tensor)
 
-        # Datasets and loaders
+        # Datasets and loaders — use scaled arrays
         if model_name == "lstm":
-            seq_len     = cfg["seq_len"]
-            train_ds    = SequenceDataset(X_tr.values, y_tr, seq_len=seq_len)
-            val_ds      = SequenceDataset(X_te.values, y_te, seq_len=seq_len)
+            seq_len  = cfg["seq_len"]
+            train_ds = SequenceDataset(X_tr_arr, y_tr, seq_len=seq_len)
+            val_ds   = SequenceDataset(X_te_arr, y_te, seq_len=seq_len)
         else:
-            train_ds = EpochDataset(X_tr.values, y_tr)
-            val_ds   = EpochDataset(X_te.values, y_te)
+            train_ds = EpochDataset(X_tr_arr, y_tr)
+            val_ds   = EpochDataset(X_te_arr, y_te)
 
         train_loader = DataLoader(train_ds, batch_size=cfg["batch_size"],
                                   shuffle=True,  num_workers=0, pin_memory=True)
@@ -1124,8 +1198,9 @@ def run_pytorch_step(
         for fold, (tr_idx, te_idx) in enumerate(
             gkf.split(X, y, groups), start=1
         ):
-            m = _run_fold(fold, X.iloc[tr_idx], y[tr_idx],
-                          X.iloc[te_idx],  y[te_idx])
+            X_tr = X.iloc[tr_idx] if isinstance(X, pd.DataFrame) else X[tr_idx]
+            X_te = X.iloc[te_idx] if isinstance(X, pd.DataFrame) else X[te_idx]
+            m = _run_fold(fold, X_tr, y[tr_idx], X_te, y[te_idx])
             fold_metrics.append(m)
     else:
         m = _run_fold(1, X, y, X_test, y_test)

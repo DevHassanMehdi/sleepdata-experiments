@@ -4,6 +4,7 @@ utils/data_utils.py
 PyTorch Dataset classes for sleep-stage classification.
 """
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 
@@ -12,7 +13,10 @@ class EpochDataset(Dataset):
     """Single-epoch dataset for MLP, CNN, RandomForest, XGBoost."""
 
     def __init__(self, X, y):
-        self.X = torch.FloatTensor(X if not hasattr(X, "values") else X.values)
+        X_arr = X.values if hasattr(X, "values") else X
+        X_arr = np.array(X_arr, dtype=np.float32)
+        X_arr = np.nan_to_num(X_arr, nan=0.0, posinf=0.0, neginf=0.0)
+        self.X = torch.FloatTensor(X_arr)
         self.y = torch.LongTensor(y)
 
     def __len__(self) -> int:
@@ -33,7 +37,10 @@ class SequenceDataset(Dataset):
 
     def __init__(self, X, y, seq_len: int = 10):
         self.seq_len   = seq_len
-        self.X         = torch.FloatTensor(X if not hasattr(X, "values") else X.values)
+        X_arr          = X.values if hasattr(X, "values") else X
+        X_arr          = np.array(X_arr, dtype=np.float32)
+        X_arr          = np.nan_to_num(X_arr, nan=0.0, posinf=0.0, neginf=0.0)
+        self.X         = torch.FloatTensor(X_arr)
         self.y         = torch.LongTensor(y)
         self.valid_idx = list(range(seq_len - 1, len(y)))
 
