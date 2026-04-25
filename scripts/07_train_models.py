@@ -990,15 +990,19 @@ def run_cross_dataset_step(
     cw    = compute_class_weights(y_train)
     model = get_model(model_name)
 
+    # Normalise to numpy — X_train/X_test may be ndarray (load_step4) or DataFrame (load_step3)
+    X_tr = X_train.values if hasattr(X_train, "values") else X_train
+    X_te = X_test.values  if hasattr(X_test,  "values") else X_test
+
     t0 = time.time()
     if model_name == "xgboost":
         sample_weight = np.array([cw[c] for c in y_train])
-        model.fit(X_train.values, y_train, sample_weight=sample_weight)
+        model.fit(X_tr, y_train, sample_weight=sample_weight)
     else:
-        model.fit(X_train, y_train)
+        model.fit(X_tr, y_train)
 
-    y_pred  = model.predict(X_test)
-    y_proba = model.predict_proba(X_test)
+    y_pred  = model.predict(X_te)
+    y_proba = model.predict_proba(X_te)
     elapsed = (time.time() - t0) / 60
 
     m = compute_metrics(y_test, y_pred, y_proba)
@@ -1088,6 +1092,7 @@ def run_pytorch_step(
     groups: np.ndarray | None,
     X_test: pd.DataFrame | None = None,
     y_test: np.ndarray | None = None,
+    tag: str = "",
 ) -> None:
     """
     PyTorch training for MLP, LSTM, CNN.
@@ -1098,6 +1103,7 @@ def run_pytorch_step(
         raise ImportError("torch not installed. See requirements.txt.")
 
     abbr       = _MODEL_ABBR[model_name]
+    suffix     = f"_{tag}" if tag else ""
     logger     = _setup_logger(step_num, model_name)
     writer     = _make_writer(step_num, model_name)
     cfg        = CONFIG[model_name]
@@ -1212,7 +1218,7 @@ def run_pytorch_step(
 
         # Save per-fold checkpoint
         _p("models").mkdir(parents=True, exist_ok=True)
-        ckpt_path = _p("models") / f"step{step_num}_{abbr}_fold{fold}.pt"
+        ckpt_path = _p("models") / f"step{step_num}_{abbr}{suffix}_fold{fold}.pt"
         torch.save(model.state_dict(), ckpt_path)
 
         label_str = f"fold {fold}/{n_folds}" if is_cv else "train→test"
@@ -1246,22 +1252,28 @@ def run_pytorch_step(
     all_y_pred = np.concatenate(all_y_pred)
 
     _p("predictions").mkdir(parents=True, exist_ok=True)
-    pred_path = _p("predictions") / f"step{step_num}_{abbr}_predictions.csv"
+    pred_path = _p("predictions") / f"step{step_num}_{abbr}{suffix}_predictions.csv"
     pd.concat(pred_parts, ignore_index=True).to_csv(pred_path, index=False)
 
     _p("results").mkdir(parents=True, exist_ok=True)
-    metrics_path = _p("results") / f"step{step_num}_{abbr}_metrics.csv"
+    metrics_path = _p("results") / f"step{step_num}_{abbr}{suffix}_metrics.csv"
     metrics_df.to_csv(metrics_path, index=False)
 
+    # Use tagged model name for plot filenames so tag appears in figure filenames
     _p("figures").mkdir(parents=True, exist_ok=True)
-    cm_path = plot_confusion_matrix(all_y_true, all_y_pred, step_num, model_name)
+    if suffix:
+        _MODEL_ABBR[model_name + suffix] = abbr + suffix
+    _plot_name = model_name + suffix if suffix else model_name
+    cm_path = plot_confusion_matrix(all_y_true, all_y_pred, step_num, _plot_name)
     if is_cv:
-        plot_cv_boxplot(metrics_df, step_num, model_name)
+        plot_cv_boxplot(metrics_df, step_num, _plot_name)
     else:
         plot_roc_curves(all_y_true,
                         pd.concat(pred_parts)[[f"proba_{n}"
                                                for n in CONFIG["label_names"]]].values,
-                        step_num, model_name)
+                        step_num, _plot_name)
+    if suffix and (model_name + suffix) in _MODEL_ABBR:
+        del _MODEL_ABBR[model_name + suffix]
 
     if writer:
         writer.close()
@@ -1316,7 +1328,8 @@ def run_step(step_num: int, model_name: str, resume: bool = False) -> None:
 
             if is_pytorch:
                 run_pytorch_step(step_num, model_name, X_train, y_train,
-                                 groups=None, X_test=X_test, y_test=y_test)
+                                 groups=None, X_test=X_test, y_test=y_test,
+                                 tag=method)
             else:
                 run_cross_dataset_step(step_num, model_name,
                                        X_train, y_train, X_test, y_test,
