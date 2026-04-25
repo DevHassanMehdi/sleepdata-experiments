@@ -251,11 +251,6 @@ def load_step1() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     meta_cols    = ["label", "_subject_id"]
     feature_cols = [c for c in combined.columns if c not in meta_cols]
 
-    # Report NaN situation
-    nan_count = combined[feature_cols].isna().sum().sum()
-    nan_cols  = int(combined[feature_cols].isna().any().sum())
-    print(f"  [info] TSFEL NaN values: {nan_count:,} across {nan_cols} feature columns",
-          flush=True)
 
     # Fill NaN with column median; entire-NaN columns → 0
     for col in feature_cols:
@@ -269,11 +264,6 @@ def load_step1() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     combined[feature_cols] = combined[feature_cols].replace(
         [np.inf, -np.inf], 0.0)
 
-    # Final verification
-    nan_after = int(combined[feature_cols].isna().sum().sum())
-    inf_after = int(np.isinf(combined[feature_cols].values).sum())
-    print(f"  [info] After imputation — NaN: {nan_after}, Inf: {inf_after}",
-          flush=True)
 
     X      = combined[feature_cols].values.astype(np.float32)
     y      = combined["label"].values
